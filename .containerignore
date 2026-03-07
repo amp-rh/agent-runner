@@ -1,0 +1,11 @@
+*.json
+.claude/
+!.claude/agents/
+.git/
+*.pem
+*.key
+.env
+.gitignore
+.containerignore
+CLAUDE.md
+README.md

@@ -1,0 +1,7 @@
+sa-key.json
+claude.json
+*.pem
+*.key
+.env
+.claude/settings.local.json
+.claude/agent-memory/
