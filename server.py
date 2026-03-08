@@ -183,6 +183,28 @@ def _mint_peer_token(peer_url: str) -> str | None:
     )
 
 
+def _parse_jsonrpc_response(resp: httpx.Response) -> dict:
+    """Extract a JSON-RPC object from a plain JSON or SSE response.
+
+    MCP Streamable HTTP returns ``text/event-stream`` by default::
+
+        event: message
+        data: {"jsonrpc": "2.0", ...}
+
+    This helper handles both ``application/json`` and SSE transparently.
+    """
+    content_type = resp.headers.get("content-type", "")
+    if "application/json" in content_type:
+        return resp.json()
+    # SSE: find the first "data:" line containing JSON
+    for line in resp.text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("data:"):
+            return json.loads(stripped[5:].strip())
+    # Last resort: try parsing the whole body as JSON
+    return resp.json()
+
+
 async def _call_peer_tool(
     peer_url: str,
     token: str | None,
@@ -235,7 +257,7 @@ async def _call_peer_tool(
         resp = await client.post(url, json=tool_req, headers=sess_headers)
         resp.raise_for_status()
 
-    result = resp.json()
+    result = _parse_jsonrpc_response(resp)
     if "error" in result:
         raise RuntimeError(f"Peer error: {result['error']}")
 
