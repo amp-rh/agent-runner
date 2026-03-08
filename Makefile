@@ -21,7 +21,9 @@ IMAGE_TAG    := $(REGISTRY)/$(IMAGE):latest
 .PHONY: all build run run-agent run-server secret push deploy configure-url \
         service-url setup-infra register-agent bootstrap rotate-oauth \
         _check-prereqs _ensure-sa _register-orchestrator _deploy-orchestrator \
-        _configure-and-report
+        _configure-and-report \
+        register-firestore-agent register-pubsub-agent register-all-agents \
+        deploy-firestore-agent deploy-pubsub-agent deploy-all-agents
 
 all: build
 
@@ -94,7 +96,7 @@ deploy:
 	  --project=$(PROJECT) \
 	  --service-account=$(SA_EMAIL) \
 	  --set-secrets=/run/secrets/sa-key.json=gcloud-sa-key:latest \
-	  --set-env-vars=GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json,MODE=server,GCP_PROJECT=$(PROJECT)$(if $(AGENT_ID),$(comma)AGENT_ID=$(AGENT_ID))$(if $(SERVICE_URL),$(comma)PUBLIC_URL=$(SERVICE_URL)) \
+	  --set-env-vars=GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json,MODE=server,GCP_PROJECT=$(PROJECT)$(if $(AGENT_ID),$(comma)AGENT_ID=$(AGENT_ID))$(if $(SERVICE_URL),$(comma)PUBLIC_URL=$(SERVICE_URL))$(if $(AGENT_CAPABILITIES),$(comma)AGENT_CAPABILITIES=$(AGENT_CAPABILITIES))$(if $(AGENT_DESCRIPTION),$(comma)AGENT_DESCRIPTION=$(AGENT_DESCRIPTION)) \
 	  --set-secrets=ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest \
 	  --set-secrets=OAUTH_CLIENT_CREDENTIALS=oauth-client-credentials:latest \
 	  --set-secrets=OAUTH_SIGNING_KEY=oauth-signing-key:latest \
@@ -166,6 +168,35 @@ _configure-and-report:
 	echo ""; \
 	echo "  Connect to Claude Web using the URL and credentials above."; \
 	echo "============================================"
+
+# --- Agent registration and deployment targets ---
+
+register-firestore-agent:
+	@echo "=== Registering firestore-agent in Firestore ==="
+	GOOGLE_APPLICATION_CREDENTIALS=$(SA_KEY_FILE) uv run --with google-cloud-firestore \
+	  python3 agent_loader.py --register .claude/agents/firestore-agent.md --project $(PROJECT)
+
+register-pubsub-agent:
+	@echo "=== Registering pubsub-agent in Firestore ==="
+	GOOGLE_APPLICATION_CREDENTIALS=$(SA_KEY_FILE) uv run --with google-cloud-firestore \
+	  python3 agent_loader.py --register .claude/agents/pubsub-agent.md --project $(PROJECT)
+
+register-all-agents: _register-orchestrator register-firestore-agent register-pubsub-agent
+
+deploy-firestore-agent:
+	$(MAKE) deploy AGENT_ID=firestore-agent SERVICE=firestore-agent-mcp \
+	  AGENT_CAPABILITIES=firestore,database \
+	  AGENT_DESCRIPTION="Firestore operations specialist"
+
+deploy-pubsub-agent:
+	$(MAKE) deploy AGENT_ID=pubsub-agent SERVICE=pubsub-agent-mcp \
+	  AGENT_CAPABILITIES=pubsub,messaging \
+	  AGENT_DESCRIPTION="Pub/Sub messaging specialist"
+
+deploy-all-agents:
+	$(MAKE) deploy AGENT_ID=orchestrator
+	$(MAKE) deploy-firestore-agent
+	$(MAKE) deploy-pubsub-agent
 
 # --- Infrastructure setup (idempotent) ---
 

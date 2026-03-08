@@ -40,7 +40,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash && \
 
 FROM install-claude-cli AS install-packages
 RUN UV_PYTHON_INSTALL_MIRROR="" uv pip install --system --python python3.11 --break-system-packages \
-      mcp "PyJWT[crypto]" uvicorn google-cloud-firestore google-cloud-pubsub && \
+      mcp "PyJWT[crypto]" uvicorn google-cloud-firestore google-cloud-pubsub httpx && \
     find /usr/local/lib/uv/python -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; \
     rm -rf /usr/share/doc /usr/share/man /usr/share/locale /var/cache/dnf /var/lib/rpm && \
     true
@@ -53,6 +53,8 @@ COPY agent_loader.py /usr/local/lib/mcp-server/agent_loader.py
 COPY agent_registry.py /usr/local/lib/mcp-server/agent_registry.py
 COPY --chown=1001:1001 .claude/agents/gcloud-operator.md /home/user/.claude/agents/gcloud-operator.md
 COPY --chown=1001:1001 .claude/agents/orchestrator.md /home/user/.claude/agents/orchestrator.md
+COPY --chown=1001:1001 .claude/agents/firestore-agent.md /home/user/.claude/agents/firestore-agent.md
+COPY --chown=1001:1001 .claude/agents/pubsub-agent.md /home/user/.claude/agents/pubsub-agent.md
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

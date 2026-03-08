@@ -2,8 +2,11 @@
 
 import json
 import os
+import secrets
 import subprocess
+import time
 
+import httpx
 import jwt
 from jwt import PyJWKClient
 from cryptography.hazmat.primitives import serialization
@@ -147,9 +150,149 @@ def list_peers() -> str:
         from agent_registry import list_peers as _list_peers
 
         peers = _list_peers()
+        peers = [p for p in peers if p.get("name") != AGENT_NAME]
         return json.dumps(peers, default=str)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
+
+
+def _mint_peer_token(peer_url: str) -> str | None:
+    """Mint a JWT access token accepted by a peer agent's BearerAuthMiddleware.
+
+    All agents share the same RSA signing key, so a token signed here will
+    validate at the peer.  The ``iss`` and ``aud`` claims must match the
+    peer's PUBLIC_URL (which equals its service_url in the registry).
+    """
+    if oauth_config is None:
+        return None
+
+    now = int(time.time())
+    payload = {
+        "iss": peer_url,
+        "aud": peer_url,
+        "sub": oauth_config.client_id,
+        "exp": now + 300,
+        "iat": now,
+        "jti": secrets.token_urlsafe(16),
+    }
+    return jwt.encode(
+        payload,
+        oauth_config.signing_key,
+        algorithm="RS256",
+        headers={"kid": "mcp-signing-key"},
+    )
+
+
+async def _call_peer_tool(
+    peer_url: str,
+    token: str | None,
+    tool_name: str,
+    arguments: dict,
+    timeout: float,
+) -> str:
+    """Call an MCP tool on a peer agent via Streamable HTTP (JSON-RPC).
+
+    Performs the full MCP handshake:
+      1. ``initialize`` — server returns session ID
+      2. ``notifications/initialized`` — confirm ready
+      3. ``tools/call`` — invoke the tool
+    """
+    url = peer_url.rstrip("/") + "/mcp"
+    headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        # Step 1: initialize
+        init_req = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": AGENT_NAME, "version": "1.0"},
+                "capabilities": {},
+            },
+        }
+        resp = await client.post(url, json=init_req, headers=headers)
+        resp.raise_for_status()
+        session_id = resp.headers.get("mcp-session-id")
+        sess_headers = {**headers}
+        if session_id:
+            sess_headers["Mcp-Session-Id"] = session_id
+
+        # Step 2: send initialized notification
+        notif = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        await client.post(url, json=notif, headers=sess_headers)
+
+        # Step 3: call the tool
+        tool_req = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+        }
+        resp = await client.post(url, json=tool_req, headers=sess_headers)
+        resp.raise_for_status()
+
+    result = resp.json()
+    if "error" in result:
+        raise RuntimeError(f"Peer error: {result['error']}")
+
+    content = result.get("result", {}).get("content", [])
+    texts = [c["text"] for c in content if c.get("type") == "text"]
+    return "\n".join(texts) if texts else str(result.get("result"))
+
+
+@mcp.tool()
+async def delegate_task(peer_name: str, prompt: str) -> str:
+    """Delegate a task to a peer agent by name.
+
+    Discovers the peer via the Firestore registry, mints a JWT for
+    authentication, and invokes the peer's ``run_task`` MCP tool.
+    """
+    if peer_name == AGENT_NAME:
+        raise ValueError(
+            f"Cannot delegate to self ('{AGENT_NAME}'). "
+            "Use run_task for local execution."
+        )
+
+    from agent_registry import discover
+
+    peers = discover()
+    peer = next((p for p in peers if p["name"] == peer_name), None)
+    if not peer:
+        available = [p["name"] for p in peers if p["name"] != AGENT_NAME]
+        raise ValueError(
+            f"Peer '{peer_name}' not found or offline. "
+            f"Available peers: {available}"
+        )
+
+    peer_url = peer["service_url"]
+    token = _mint_peer_token(peer_url)
+
+    try:
+        result = await _call_peer_tool(
+            peer_url=peer_url,
+            token=token,
+            tool_name="run_task",
+            arguments={"prompt": prompt},
+            timeout=AGENT_TIMEOUT + 30,
+        )
+        return result
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"Peer '{peer_name}' returned HTTP {exc.response.status_code}: "
+            f"{exc.response.text[:500]}"
+        ) from exc
+    except httpx.ConnectError as exc:
+        raise RuntimeError(
+            f"Peer '{peer_name}' at {peer_url} is unreachable: {exc}"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to delegate to '{peer_name}': {exc}"
+        ) from exc
 
 
 if __name__ == "__main__":

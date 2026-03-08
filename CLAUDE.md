@@ -27,7 +27,7 @@ Container Startup (entrypoint.sh)
 │  └─ server.py (foreground, uvicorn on 0.0.0.0:PORT)
 │     ├─ BearerAuthMiddleware validates JWT on every MCP request
 │     ├─ OAuth endpoints: /authorize, /token, /well-known/*
-│     └─ MCP tools: run_task, list_peers
+│     └─ MCP tools: run_task, list_peers, delegate_task
 │
 └─ Default (CLI mode):
    └─ Execute: claude --print --agent $AGENT_NAME "$@"
@@ -46,6 +46,8 @@ Makefile               # Build, deploy, and management targets
 .claude/agents/        # Baked-in fallback agent definitions
   gcloud-operator.md   # GCP operations agent (default fallback)
   orchestrator.md      # Agent lifecycle orchestrator
+  firestore-agent.md   # Firestore operations specialist
+  pubsub-agent.md      # Pub/Sub messaging specialist
 ```
 
 ## Environment Variables
@@ -137,6 +139,10 @@ make run-agent TASK="list my GCS buckets"      # One-shot task, CLI mode
 make run-server AGENT_ID=gcloud-operator       # Start MCP server on localhost:8080
 make show-credentials                          # Display current OAuth credentials
 make rotate-oauth                              # Regenerate OAuth credentials (requires re-deploy)
+make register-all-agents                       # Register orchestrator + firestore + pubsub agents
+make deploy-all-agents                         # Deploy all agents to Cloud Run
+make deploy-firestore-agent                    # Deploy firestore-agent independently
+make deploy-pubsub-agent                       # Deploy pubsub-agent independently
 ```
 
 ### Credential Management
@@ -158,13 +164,14 @@ model: claude-opus-4-6        # or claude-sonnet-4-6, etc.
 color: purple                 # optional, for UI display
 memory: project               # optional: "project" for persistent memory, omit for none
 timeout: 600                  # optional, overrides AGENT_TIMEOUT
+capabilities: firestore,db    # optional, comma-separated capability tags for peer discovery
 ---
 
 Agent system prompt goes here. Full markdown body.
 Supports multi-line instructions.
 ```
 
-**Parsed fields**: `name`, `description`, `model`, `color`, `memory`, `timeout`
+**Parsed fields**: `name`, `description`, `model`, `color`, `memory`, `timeout`, `capabilities`
 **System prompt**: Everything after the closing `---` frontmatter fence
 
 `agent_loader.py` parses these files (line-by-line YAML, no external YAML parser needed) and stores them in Firestore. On container startup, `AGENT_ID` is used to fetch the config from Firestore and write it back to a `.md` file for the claude CLI.
@@ -183,10 +190,24 @@ claude --print --dangerously-skip-permissions --agent $AGENT_NAME <prompt>
 
 ### `list_peers() -> str`
 
-Queries the Firestore `registry` collection for all agents with `status="online"`, returns JSON array:
+Queries the Firestore `registry` collection for all agents with `status="online"`, returns JSON array.
+Filters out the calling agent (self) from the results.
 ```json
 [{"name": "...", "service_url": "...", "capabilities": [...], "description": "..."}]
 ```
+
+### `delegate_task(peer_name: str, prompt: str) -> str`
+
+Delegates a task to a peer agent by name via A2A (agent-to-agent) communication:
+- Looks up the peer in the Firestore `registry` collection by name
+- Mints a JWT access token using the shared OAuth signing key (A2A auth)
+- Performs MCP Streamable HTTP handshake (initialize → initialized → tools/call)
+- Invokes the peer's `run_task` tool with the given prompt
+- Returns the peer's text response
+- Timeout: `AGENT_TIMEOUT + 30` seconds
+- Rejects self-delegation to prevent deadlock
+
+**A2A Authentication**: All agents share the same RSA signing key (from Secret Manager). When agent A calls agent B, it mints a JWT with `iss=B_PUBLIC_URL` and `aud=B_PUBLIC_URL`, signed with the shared key. Agent B's `BearerAuthMiddleware` validates it against its own `PUBLIC_URL` — the signature is valid because the same key pair is used across all agents. No PKCE handshake is needed for server-to-server calls.
 
 ## OAuth 2.1 Implementation
 
@@ -305,3 +326,6 @@ When deployed via `make deploy`:
 - **JWKS deadlock**: With `concurrency=1`, a self-referential JWKS HTTP fetch deadlocks; solved by using the local public key directly in `oauth.py` instead of fetching from self
 - Firestore and Pub/Sub failures in `agent_registry.py` are non-fatal — the server starts and logs warnings
 - `agent_loader.py` uses simple line-by-line YAML parsing (no `pyyaml` dependency needed in the container)
+- **A2A self-delegation deadlock**: `delegate_task` rejects `peer_name == AGENT_NAME` to prevent a request that would deadlock (especially at `concurrency=1`)
+- **A2A auth trick**: All agents share one RSA key pair, so agent A can mint a JWT with `iss=aud=B_PUBLIC_URL` that agent B accepts — no PKCE round-trip needed for server-to-server
+- **MCP handshake for A2A**: Streamable HTTP requires `initialize` → `notifications/initialized` → `tools/call` (three HTTP POSTs), tracking `mcp-session-id` across requests
