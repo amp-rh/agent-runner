@@ -76,7 +76,8 @@ register-agent:
 	  echo "Usage: make register-agent AGENT_FILE=path/to/agent.md [PROJECT=$(PROJECT)]"; \
 	  exit 1; \
 	fi
-	python3 agent_loader.py --register $(AGENT_FILE) --project $(PROJECT)
+	GOOGLE_APPLICATION_CREDENTIALS=$(SA_KEY_FILE) uv run --with google-cloud-firestore \
+	  python3 agent_loader.py --register $(AGENT_FILE) --project $(PROJECT)
 
 # --- Cloud Run deployment targets ---
 
@@ -134,7 +135,8 @@ _check-prereqs:
 
 _register-orchestrator:
 	@echo "=== Registering orchestrator agent in Firestore ==="
-	python3 agent_loader.py --register .claude/agents/orchestrator.md --project $(PROJECT)
+	GOOGLE_APPLICATION_CREDENTIALS=$(SA_KEY_FILE) uv run --with google-cloud-firestore \
+	  python3 agent_loader.py --register .claude/agents/orchestrator.md --project $(PROJECT)
 
 _deploy-orchestrator:
 	@echo "=== Deploying orchestrator to Cloud Run ==="
