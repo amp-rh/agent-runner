@@ -161,7 +161,8 @@ Logs every tool invocation as JSON to stderr.
 ### Core
 - `build` -- podman build
 - `push` -- tag + push to Artifact Registry
-- `deploy` -- deploy to Cloud Run
+- `deploy` -- deploy to Cloud Run (from pre-built image)
+- `deploy-source` -- deploy to Cloud Run from source (Cloud Build builds via `cloudbuild.yaml`)
 - `test` -- pytest
 - `lint` -- ruff check
 
@@ -176,8 +177,9 @@ Logs every tool invocation as JSON to stderr.
 - `disconnect` -- remove from Claude Code
 
 ### Infrastructure
-- `setup-infra` -- idempotent GCP setup
-- `bootstrap` -- full one-command deploy
+- `setup-infra` -- idempotent GCP setup (enables Cloud Build, grants SA permissions)
+- `bootstrap` -- full one-command deploy (build + push + deploy from image)
+- `bootstrap-source` -- full one-command deploy from source (no local build required)
 
 ### Credentials
 - `show-credentials` -- display OAuth client ID/secret
