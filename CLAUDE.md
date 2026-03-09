@@ -1,331 +1,206 @@
-# Agent Runner
+# Agent Runner v2
 
 A reusable container image for deploying Claude agents as MCP servers on Cloud Run.
-
-## Project Purpose
-
-Build a slim UBI9-based container image pre-loaded with:
-- Google Cloud SDK (`gcloud`, `gsutil`, `bq`)
-- Python 3.11 + `uv` for Python tooling
-- Claude CLI for AI-assisted workflows
-- MCP server with OAuth 2.1 for remote agent access
-- Firestore-based agent configuration and peer discovery
 
 ## Architecture
 
 ```
-Container Startup (entrypoint.sh)
-├─ Load claude.json config (if provided at /run/config/claude.json)
-├─ Activate gcloud service account auth
-├─ Load AGENT_ID from Firestore via agent_loader.py
-│  └─ Falls back to gcloud-operator if Firestore unavailable
+Container Startup (python -m agent_runner)
+├── Load config from /etc/agent-runner/config.yaml or ./agent-config.yaml
+├── Apply env var overrides (AGENT_CONFIG_AGENT__NAME=x)
+├── Apply legacy env vars (AGENT_NAME, PORT, etc.)
 │
-├─ MODE=server:
-│  ├─ agent_registry.py (background thread)
-│  │  ├─ Publish capabilities to Pub/Sub (agent-capabilities topic)
-│  │  └─ Upsert agent entry in Firestore registry collection
-│  └─ server.py (foreground, uvicorn on 0.0.0.0:PORT)
-│     ├─ BearerAuthMiddleware validates JWT on every MCP request
-│     ├─ OAuth endpoints: /authorize, /token, /well-known/*
-│     └─ MCP tools: run_task, list_peers, delegate_task
+├── Server mode (default):
+│   ├── Create AgentRunner (Claude Agent SDK wrapper)
+│   ├── Create FastMCP server (run_task, list_peers tools)
+│   ├── Create A2A application (Agent Card, task executor)
+│   ├── Create OAuth app (if credentials configured)
+│   ├── Compose Starlette app (OAuth + A2A + MCP routes)
+│   ├── Register in Firestore registry + Pub/Sub
+│   └── Start uvicorn
 │
-└─ Default (CLI mode):
-   └─ Execute: claude --print --agent $AGENT_NAME "$@"
+├── CLI mode (--task "..."):
+│   └── Run single task via AgentRunner, print result, exit
+│
+└── Worker mode (--worker):
+    └── Subscribe to Pub/Sub, process messages as tasks
 ```
 
-## File Structure
+## Project Structure
 
 ```
-Containerfile          # Multi-stage container build (UBI9-minimal)
-server.py              # MCP server with OAuth 2.1 auth
-oauth.py               # OAuth 2.1 authorization server (RFC 8414)
-agent_loader.py        # Firestore agent config loader + register CLI
-agent_registry.py      # Pub/Sub + Firestore agent discovery
-entrypoint.sh          # Container entrypoint
-Makefile               # Build, deploy, and management targets
-.claude/agents/        # Baked-in fallback agent definitions
-  gcloud-operator.md   # GCP operations agent (default fallback)
-  orchestrator.md      # Agent lifecycle orchestrator
-  firestore-agent.md   # Firestore operations specialist
-  pubsub-agent.md      # Pub/Sub messaging specialist
+src/agent_runner/
+├── __init__.py
+├── __main__.py           # Entrypoint: python -m agent_runner
+├── config.py             # YAML + env overrides + pydantic validation
+├── server.py             # Starlette app composition (FastMCP + A2A + OAuth)
+├── agent.py              # ClaudeSDKClient wrapper
+├── hooks/
+│   ├── reflection.py     # Stop hook: persist session learnings to Firestore
+│   ├── audit.py          # PreToolUse hook: log tool invocations
+│   └── registry.py       # Build hooks dict from config
+├── a2a/
+│   ├── card.py           # Build AgentCard from config
+│   ├── executor.py       # Bridge A2A tasks to Claude Agent SDK
+│   ├── client.py         # Call remote agents via A2A protocol
+│   └── discovery.py      # Firestore registry + Agent Card fetch
+├── mcp/
+│   ├── server.py         # FastMCP v3.1 setup, tool registration
+│   └── tools.py          # run_task, list_peers tool functions
+├── auth/
+│   ├── oauth.py          # OAuth 2.1 server (RFC 8414, PKCE, stateless JWTs)
+│   └── middleware.py     # Bearer auth middleware
+├── registry/
+│   ├── firestore.py      # Agent registry CRUD
+│   └── pubsub.py         # Capability announcements
+└── worker/
+    └── pubsub.py         # Pub/Sub background worker mode
 ```
+
+## Dependencies
+
+| Package | Role |
+|---------|------|
+| `claude-agent-sdk>=0.1.48` | Agent runtime (replaces subprocess claude CLI calls) |
+| `fastmcp>=3.1.0` | MCP server (PrefectHQ standalone) |
+| `a2a-sdk[http-server]>=0.3.24` | Google A2A protocol |
+| `PyJWT[crypto]` | OAuth 2.1 JWT signing/validation |
+| `uvicorn` | ASGI server |
+| `google-cloud-firestore` | Registry, learnings |
+| `google-cloud-pubsub` | Capability announcements |
+| `httpx` | HTTP client for A2A |
+| `pyyaml` | YAML config parsing |
+| `pydantic>=2.0` | Config validation |
 
 ## Environment Variables
 
-### Runtime (container)
+### Config Overrides
+
+Use `AGENT_CONFIG_<SECTION>__<KEY>=value` (double underscore for nesting):
+```
+AGENT_CONFIG_AGENT__NAME=my-agent
+AGENT_CONFIG_AGENT__MODEL=claude-opus-4-6
+AGENT_CONFIG_SERVER__PORT=9090
+```
+
+### Legacy Variables (backward compatible)
+
+| Variable | Maps to |
+|----------|---------|
+| `AGENT_NAME` | `agent.name` |
+| `AGENT_TIMEOUT` | `agent.timeout` |
+| `GCP_PROJECT` | `gcp.project` |
+| `PUBLIC_URL` | `server.public_url` |
+| `PORT` | `server.port` |
+
+### Runtime Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GCP_PROJECT` | Target GCP project | `claude-connectors` |
-| `AGENT_ID` | Agent to load from Firestore on startup | (none, uses fallback) |
-| `AGENT_NAME` | Agent name passed to claude CLI | `gcloud-operator` |
-| `AGENT_TIMEOUT` | Subprocess timeout in seconds | `300` |
-| `AGENT_CAPABILITIES` | Comma-separated capability tags | (empty) |
-| `AGENT_DESCRIPTION` | Human-readable agent description | (auto from Firestore) |
-| `MODE` | `server` for MCP server, omit for CLI | (empty) |
-| `PUBLIC_URL` | External URL for OAuth metadata (issuer + audience) | `http://localhost:8080` |
-| `PORT` | Server listen port | `8080` |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to SA key file | (none) |
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude | (none) |
+| `ANTHROPIC_API_KEY` | Anthropic API key | (required) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | SA key file path | (none) |
 
-### OAuth (injected from Secret Manager)
+### OAuth Variables
 
 | Variable | Description |
 |----------|-------------|
-| `OAUTH_CLIENT_CREDENTIALS` | `client_id:client_secret` (colon-separated) |
-| `OAUTH_SIGNING_KEY` | RSA private key (PEM) for JWT signing |
-| `OAUTH2_AUDIENCE` | JWT audience override (defaults to `PUBLIC_URL`) |
-| `OAUTH2_ISSUER` | JWT issuer override (defaults to `PUBLIC_URL`) |
-| `OAUTH2_JWKS_URI` | Remote JWKS endpoint for validation (optional) |
+| `OAUTH_CLIENT_CREDENTIALS` | `client_id:client_secret` |
+| `OAUTH_SIGNING_KEY` | RSA private key (PEM) |
+| `OAUTH2_AUDIENCE` | JWT audience (defaults to PUBLIC_URL) |
+| `OAUTH2_ISSUER` | JWT issuer (defaults to PUBLIC_URL) |
+| `OAUTH2_JWKS_URI` | Remote JWKS endpoint (optional) |
 
-**Note**: If `OAUTH_CLIENT_CREDENTIALS` is unset, authentication is bypassed (local dev mode).
+If `OAUTH_CLIENT_CREDENTIALS` is unset, authentication is bypassed (local dev mode).
 
-### Makefile Variables (all overridable via environment)
+## YAML Config
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PROJECT` | `claude-connectors` | GCP project for all operations |
-| `REGION` | `us-central1` | GCP region for Artifact Registry + Cloud Run |
-| `REPO` | `agent-runner` | Artifact Registry repository name |
-| `IMAGE` | `agent-runner` | Container image name |
-| `SERVICE` | `$(IMAGE)-mcp` | Cloud Run service name |
-| `SA_NAME` | `claude-connector` | Service account name |
-| `SA_EMAIL` | `$(SA_NAME)@$(PROJECT).iam.gserviceaccount.com` | Full SA email |
-| `SA_KEY_FILE` | `sa-key.json` | Local SA key file path |
-| `FIRESTORE_LOCATION` | `nam5` | Firestore multi-region location (North America) |
+See `agent-config.example.yaml` for full documentation. Config loads from:
+1. `/etc/agent-runner/config.yaml` (container mount)
+2. `./agent-config.yaml` (local dev)
 
-## Bootstrap (Full Idempotent Deploy)
-
-Deploy everything with a single command. Safe to run repeatedly — skips resources that already exist and preserves existing OAuth credentials.
-
-```bash
-make bootstrap
-```
-
-This runs in sequence:
-1. `_check-prereqs` — Validates gcloud, podman, python3, openssl, authentication
-2. `setup-infra` — Idempotent GCP setup (APIs, Artifact Registry, Firestore, Pub/Sub, secrets, SA, IAM)
-3. `build` — Builds container image locally with podman
-4. `push` — Tags and pushes to Artifact Registry
-5. `_register-orchestrator` — Registers orchestrator agent config in Firestore
-6. `_deploy-orchestrator` — Deploys to Cloud Run
-7. `_configure-and-report` — Sets `PUBLIC_URL`, prints credentials
-
-On completion, outputs the orchestrator's MCP server URL, OAuth client ID, and client secret for connecting to Claude Web.
-
-### Prerequisites
-
-- `gcloud` CLI authenticated (`gcloud auth login`)
-- `podman` for container builds
-- `python3` and `openssl`
-- `ANTHROPIC_API_KEY` env var set (first run only)
-
-### Deploy a Different Agent
-
-```bash
-make register-agent AGENT_FILE=.claude/agents/my-agent.md
-make push
-make deploy AGENT_ID=my-agent
-make configure-url  # first deploy only
-```
-
-### Common Development Commands
-
-```bash
-make build                                     # Build image locally
-make secret                                    # Create podman secret from sa-key.json
-make run                                       # Interactive container shell
-make run-agent TASK="list my GCS buckets"      # One-shot task, CLI mode
-make run-server AGENT_ID=gcloud-operator       # Start MCP server on localhost:8080
-make show-credentials                          # Display current OAuth credentials
-make rotate-oauth                              # Regenerate OAuth credentials (requires re-deploy)
-make register-all-agents                       # Register orchestrator + firestore + pubsub agents
-make deploy-all-agents                         # Deploy all agents to Cloud Run
-make deploy-firestore-agent                    # Deploy firestore-agent independently
-make deploy-pubsub-agent                       # Deploy pubsub-agent independently
-```
-
-### Credential Management
-
-```bash
-make show-credentials          # display current OAuth credentials
-make rotate-oauth              # generate new credentials (requires re-deploy)
-```
-
-## Agent Definition Format
-
-Agent definitions are markdown files with YAML frontmatter. They live in `.claude/agents/` and are registered to Firestore via `make register-agent`.
-
-```markdown
----
-name: my-agent
-description: "Human-readable description for peer discovery"
-model: claude-opus-4-6        # or claude-sonnet-4-6, etc.
-color: purple                 # optional, for UI display
-memory: project               # optional: "project" for persistent memory, omit for none
-timeout: 600                  # optional, overrides AGENT_TIMEOUT
-capabilities: firestore,db    # optional, comma-separated capability tags for peer discovery
----
-
-Agent system prompt goes here. Full markdown body.
-Supports multi-line instructions.
-```
-
-**Parsed fields**: `name`, `description`, `model`, `color`, `memory`, `timeout`, `capabilities`
-**System prompt**: Everything after the closing `---` frontmatter fence
-
-`agent_loader.py` parses these files (line-by-line YAML, no external YAML parser needed) and stores them in Firestore. On container startup, `AGENT_ID` is used to fetch the config from Firestore and write it back to a `.md` file for the claude CLI.
+Then env var overrides are applied.
 
 ## MCP Tools
 
 ### `run_task(prompt: str) -> str`
-
-Runs the configured agent against a prompt:
-```
-claude --print --dangerously-skip-permissions --agent $AGENT_NAME <prompt>
-```
-- Timeout controlled by `AGENT_TIMEOUT` (default 300s)
-- Output is the agent's full text response
-- Subprocess errors surface as MCP tool errors
+Runs the configured agent via Claude Agent SDK. Timeout controlled by `agent.timeout`.
 
 ### `list_peers() -> str`
+Queries Firestore `registry` collection for online agents. Filters out self.
 
-Queries the Firestore `registry` collection for all agents with `status="online"`, returns JSON array.
-Filters out the calling agent (self) from the results.
-```json
-[{"name": "...", "service_url": "...", "capabilities": [...], "description": "..."}]
-```
+## A2A Protocol
 
-### `delegate_task(peer_name: str, prompt: str) -> str`
+Each agent serves `/.well-known/agent.json` (Agent Card) and accepts A2A tasks.
+Remote agents are discovered from the Firestore registry or by direct URL.
 
-Delegates a task to a peer agent by name via A2A (agent-to-agent) communication:
-- Looks up the peer in the Firestore `registry` collection by name
-- Mints a JWT access token using the shared OAuth signing key (A2A auth)
-- Performs MCP Streamable HTTP handshake (initialize → initialized → tools/call)
-- Invokes the peer's `run_task` tool with the given prompt
-- Returns the peer's text response
-- Timeout: `AGENT_TIMEOUT + 30` seconds
-- Rejects self-delegation to prevent deadlock
+### A2A Authentication
+All agents share one RSA key pair (from Secret Manager). Agent A mints a JWT with
+`iss=aud=B_PUBLIC_URL` signed with the shared key. Agent B validates it.
 
-**A2A Authentication**: All agents share the same RSA signing key (from Secret Manager). When agent A calls agent B, it mints a JWT with `iss=B_PUBLIC_URL` and `aud=B_PUBLIC_URL`, signed with the shared key. Agent B's `BearerAuthMiddleware` validates it against its own `PUBLIC_URL` — the signature is valid because the same key pair is used across all agents. No PKCE handshake is needed for server-to-server calls.
+## Hooks
 
-## OAuth 2.1 Implementation
+### Reflection Hook (Stop event)
+Asks the agent to reflect on the session, then persists learnings to Firestore
+at `session_learnings/{session_id}`.
 
-`oauth.py` implements a complete single-tenant OAuth 2.1 server (RFC 8414) for protecting the MCP endpoint:
-
-### Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /.well-known/oauth-authorization-server` | OAuth metadata (RFC 8414) |
-| `GET /.well-known/oauth-protected-resource` | Protected resource metadata |
-| `GET /.well-known/jwks.json` | Public key for JWT validation |
-| `GET /authorize` | Authorization endpoint (auto-approves, issues auth code) |
-| `POST /token` | Token endpoint (exchanges auth code for access token) |
-
-### Flow
-
-1. Client fetches OAuth metadata to discover endpoints
-2. Client redirects to `/authorize` with `code_challenge` (PKCE, S256)
-3. Server auto-approves (single-tenant) and redirects with signed JWT auth code (120s TTL)
-4. Client POSTs to `/token` with `code_verifier`; server validates PKCE and issues access token JWT (3600s TTL)
-5. Client sends `Authorization: Bearer <token>` on MCP requests
-6. `BearerAuthMiddleware` validates JWT (RS256, checks iss/aud/exp) on every request
-
-### Statelessness (Critical for Scale-to-Zero)
-
-Auth codes and access tokens are **signed JWTs**, not session state. This means:
-- No database needed for OAuth state
-- Cloud Run instances can scale to zero between requests
-- JWT payload carries all validation data (redirect_uri, code_challenge, expiry, jti)
-
-## Agent Discovery
-
-Agents advertise capabilities to a shared Pub/Sub topic (`agent-capabilities`) on startup and register in the Firestore `registry` collection. Other agents can discover peers via the `list_peers` MCP tool.
+### Audit Hook (PreToolUse event)
+Logs every tool invocation as JSON to stderr.
 
 ## Firestore Schema
 
-### Database: `agents`
+**Database**: `agents`
 
-**Collection: `agents`** — Agent configurations
+**Collection `registry`**: Live agent instances
+- name, service_url, capabilities, description, status, last_heartbeat, project
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Agent identifier (document ID) |
-| `description` | string | Human-readable description |
-| `model` | string | Claude model ID |
-| `system_prompt` | string | Full system prompt |
-| `enabled` | bool | Whether agent is active |
-| `timeout` | int | Subprocess timeout override |
-| `created_at` | timestamp | Creation time |
-| `updated_at` | timestamp | Last update time |
+**Collection `session_learnings`**: Session reflections
+- session_id, agent_name, timestamp, learnings, duration_seconds, model
 
-**Collection: `registry`** — Live agent instances
+## Makefile Targets
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Agent name |
-| `service_url` | string | Cloud Run service URL |
-| `capabilities` | string[] | Capability tags |
-| `description` | string | Human-readable description |
-| `status` | string | `"online"` or `"offline"` |
-| `last_heartbeat` | timestamp | Last registration time |
-| `project` | string | GCP project ID |
+### Core
+- `build` -- podman build
+- `push` -- tag + push to Artifact Registry
+- `deploy` -- deploy to Cloud Run
+- `test` -- pytest
+- `lint` -- ruff check
 
-## Containerfile Conventions
+### Local Development
+- `run-server` -- start MCP server in container
+- `run-agent TASK="..."` -- one-shot task in container
 
-- Multi-stage builds with named stages (`install-<tool>`)
-- Each stage builds on the previous, adding one tool
-- Aggressive cleanup: remove docs, caches, `__pycache__` after each install
-- Tools installed to standard paths; PATH updated via `ENV`
-- `USER 1001:1001` set **only** in the final stage
-- Python 3.11 via `uv`; `CLOUDSDK_PYTHON` set for gcloud compatibility
+### Connection
+- `connect` -- register with Claude Code (`claude mcp add-json`)
+- `connect-oauth` -- print OAuth credentials + register with Claude Code
+- `mcp-json` -- generate `.mcp.json` for project-level auto-connect
+- `disconnect` -- remove from Claude Code
 
-### Build Stages
+### Infrastructure
+- `setup-infra` -- idempotent GCP setup
+- `bootstrap` -- full one-command deploy
 
-| Stage | Content |
-|-------|---------|
-| `base` | UBI9-minimal with system packages (which, tar, gzip) |
-| `install-gcloud` | Google Cloud SDK via tarball, pruned for size |
-| `install-python` | uv + Python 3.11 |
-| `install-claude` | Claude CLI (copied to /usr/local/bin) |
-| `final` | Python packages + application code, nonroot user |
+### Credentials
+- `show-credentials` -- display OAuth client ID/secret
+- `rotate-oauth` -- regenerate OAuth credentials
 
-## Secrets (Secret Manager)
+## Containerfile
 
-| Secret | Description | Created by |
-|--------|-------------|------------|
-| `gcloud-sa-key` | GCP service account key (mounted as file) | `setup-infra` |
-| `ANTHROPIC_API_KEY` | Anthropic API key (env var) | `setup-infra` |
-| `oauth-client-credentials` | `client_id:client_secret` for OAuth (env var) | `setup-infra` (auto-generated) |
-| `oauth-signing-key` | RSA private key for JWT signing (env var) | `setup-infra` (auto-generated) |
+Multi-stage build on UBI9-minimal:
+1. `base` -- system packages (which, tar, gzip, findutils)
+2. `install-node` -- Node.js 22 LTS (required by Claude Agent SDK)
+3. `install-gcloud` -- Google Cloud SDK (pruned)
+4. `install-python` -- uv + Python 3.11
+5. `install-app` -- pip install from pyproject.toml
 
-OAuth secrets are only generated on first run. Use `make rotate-oauth` to regenerate.
+Entrypoint: `python3.11 -m agent_runner`
 
-## Cloud Run Configuration
+## Key Lessons
 
-When deployed via `make deploy`:
-- **Memory**: 512Mi
-- **CPU**: 1 vCPU
-- **Concurrency**: 10 (claude subprocess is the bottleneck)
-- **Min instances**: 0 (scale to zero)
-- **Max instances**: 1
-- **Timeout**: 300s
-- **Auth**: `--allow-unauthenticated` (OAuth middleware guards the MCP tools)
-
-## Key Lessons & Gotchas
-
-- `ubi-minimal` ships `curl-minimal`; do **NOT** add `curl` (package conflict)
-- gcloud SDK: use direct tarball, **not** the installer script (more reliable and deterministic)
-- Set `CLOUDSDK_PYTHON=/usr/local/bin/python3.11` — gcloud requires Python 3.10+
-- Claude CLI installs to `~/.local/bin`; copy to `/usr/local/bin` in **same** `RUN` layer
-- `UV_INSTALL_DIR=/usr/local/bin` for world-accessible `uv` binary
-- `--concurrency=10` on Cloud Run — the claude subprocess (not HTTP) is the bottleneck
-- `setup-infra` is idempotent: uses describe-then-create for all resources; only adds secret versions when none exist
-- `--set-env-vars` **replaces ALL** env vars; use `--update-env-vars` for partial updates (see `configure-url` target)
-- **JWKS deadlock**: With `concurrency=1`, a self-referential JWKS HTTP fetch deadlocks; solved by using the local public key directly in `oauth.py` instead of fetching from self
-- Firestore and Pub/Sub failures in `agent_registry.py` are non-fatal — the server starts and logs warnings
-- `agent_loader.py` uses simple line-by-line YAML parsing (no `pyyaml` dependency needed in the container)
-- **A2A self-delegation deadlock**: `delegate_task` rejects `peer_name == AGENT_NAME` to prevent a request that would deadlock (especially at `concurrency=1`)
-- **A2A auth trick**: All agents share one RSA key pair, so agent A can mint a JWT with `iss=aud=B_PUBLIC_URL` that agent B accepts — no PKCE round-trip needed for server-to-server
-- **MCP handshake for A2A**: Streamable HTTP requires `initialize` → `notifications/initialized` → `tools/call` (three HTTP POSTs), tracking `mcp-session-id` across requests
+- `ubi-minimal` ships `curl-minimal`; do NOT add `curl` (package conflict)
+- gcloud SDK: use direct tarball, not the installer script
+- Set `CLOUDSDK_PYTHON=/usr/local/bin/python3.11` for gcloud compatibility
+- `--concurrency=10` on Cloud Run (claude subprocess is the bottleneck)
+- `--set-env-vars` replaces ALL env vars; use `--update-env-vars` for partial updates
+- JWKS deadlock: use local public key directly (not HTTP fetch) at concurrency=1
+- Firestore/Pub/Sub failures are non-fatal (server starts, logs warnings)
+- A2A self-delegation: rejected to prevent deadlock

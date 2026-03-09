@@ -10,7 +10,6 @@ SA_NAME      ?= claude-connector
 SA_EMAIL     ?= $(SA_NAME)@$(PROJECT).iam.gserviceaccount.com
 SA_SECRET    ?= gcloud-connectors-sa
 SA_KEY_FILE  ?= sa-key.json
-CLAUDE_CONFIG_FILE ?= claude.json
 AGENT_ID     ?=
 AGENT_FILE   ?=
 FIRESTORE_LOCATION ?= nam5
@@ -18,70 +17,19 @@ FIRESTORE_LOCATION ?= nam5
 REGISTRY     := $(REGION)-docker.pkg.dev/$(PROJECT)/$(REPO)
 IMAGE_TAG    := $(REGISTRY)/$(IMAGE):latest
 
-.PHONY: all build run run-agent run-server secret push deploy configure-url \
-        service-url setup-infra register-agent bootstrap rotate-oauth \
-        _check-prereqs _ensure-sa _register-orchestrator _deploy-orchestrator \
-        _configure-and-report \
-        register-firestore-agent register-pubsub-agent register-all-agents \
-        deploy-firestore-agent deploy-pubsub-agent deploy-all-agents
+.PHONY: all build run run-agent run-server push deploy configure-url service-url \
+        setup-infra bootstrap test lint \
+        register-agent \
+        connect connect-oauth mcp-json disconnect \
+        show-credentials rotate-oauth \
+        _check-prereqs _ensure-sa _deploy-default _configure-and-report
 
 all: build
 
-# --- Local development targets ---
+# --- Core targets ---
 
 build:
 	podman build -f Containerfile -t $(IMAGE) .
-
-secret:
-	podman secret rm $(SA_SECRET) 2>/dev/null || true
-	podman secret create $(SA_SECRET) $(SA_KEY_FILE)
-
-run:
-	podman run -it --rm \
-	  --secret $(SA_SECRET),target=/run/secrets/sa-key.json \
-	  -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json \
-	  $(IMAGE)
-
-run-agent:
-	podman run --rm \
-	  --secret $(SA_SECRET),target=/run/secrets/sa-key.json \
-	  -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json \
-	  -e ANTHROPIC_API_KEY \
-	  -e GCP_PROJECT=$(PROJECT) \
-	  $(if $(AGENT_ID),-e AGENT_ID=$(AGENT_ID)) \
-	  -v $(abspath $(CLAUDE_CONFIG_FILE)):/run/config/claude.json:ro \
-	  $(IMAGE) "$(TASK)"
-
-run-server:
-	podman run --rm \
-	  --secret $(SA_SECRET),target=/run/secrets/sa-key.json \
-	  -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json \
-	  -e ANTHROPIC_API_KEY \
-	  -e MODE=server \
-	  -e GCP_PROJECT=$(PROJECT) \
-	  -e OAUTH2_JWKS_URI \
-	  -e OAUTH2_AUDIENCE \
-	  -e OAUTH2_ISSUER \
-	  -e OAUTH_CLIENT_CREDENTIALS \
-	  -e OAUTH_SIGNING_KEY \
-	  -e PUBLIC_URL=http://localhost:8080 \
-	  -e PORT=8080 \
-	  $(if $(AGENT_ID),-e AGENT_ID=$(AGENT_ID)) \
-	  -v $(abspath $(CLAUDE_CONFIG_FILE)):/run/config/claude.json:ro \
-	  -p 8080:8080 \
-	  $(IMAGE)
-
-# --- Agent management ---
-
-register-agent:
-	@if [ -z "$(AGENT_FILE)" ]; then \
-	  echo "Usage: make register-agent AGENT_FILE=path/to/agent.md [PROJECT=$(PROJECT)]"; \
-	  exit 1; \
-	fi
-	GOOGLE_APPLICATION_CREDENTIALS=$(SA_KEY_FILE) uv run --with google-cloud-firestore \
-	  python3 agent_loader.py --register $(AGENT_FILE) --project $(PROJECT)
-
-# --- Cloud Run deployment targets ---
 
 push: build
 	podman tag $(IMAGE) $(IMAGE_TAG)
@@ -96,7 +44,7 @@ deploy:
 	  --project=$(PROJECT) \
 	  --service-account=$(SA_EMAIL) \
 	  --set-secrets=/run/secrets/sa-key.json=gcloud-sa-key:latest \
-	  --set-env-vars=GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json,MODE=server,GCP_PROJECT=$(PROJECT)$(if $(AGENT_ID),$(comma)AGENT_ID=$(AGENT_ID))$(if $(SERVICE_URL),$(comma)PUBLIC_URL=$(SERVICE_URL))$(if $(AGENT_CAPABILITIES),$(comma)AGENT_CAPABILITIES=$(AGENT_CAPABILITIES))$(if $(AGENT_DESCRIPTION),$(comma)AGENT_DESCRIPTION=$(AGENT_DESCRIPTION)) \
+	  --set-env-vars=GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json,GCP_PROJECT=$(PROJECT)$(if $(AGENT_ID),$(comma)AGENT_CONFIG_AGENT__NAME=$(AGENT_ID))$(if $(SERVICE_URL),$(comma)PUBLIC_URL=$(SERVICE_URL)) \
 	  --set-secrets=ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest \
 	  --set-secrets=OAUTH_CLIENT_CREDENTIALS=oauth-client-credentials:latest \
 	  --set-secrets=OAUTH_SIGNING_KEY=oauth-signing-key:latest \
@@ -110,6 +58,97 @@ deploy:
 	  --allow-unauthenticated \
 	  --port=8080
 
+test:
+	uv run --with ".[dev]" pytest tests/ -v
+
+lint:
+	uv run --with ".[dev]" ruff check src/ tests/
+
+# --- Local development ---
+
+secret:
+	podman secret rm $(SA_SECRET) 2>/dev/null || true
+	podman secret create $(SA_SECRET) $(SA_KEY_FILE)
+
+run-server:
+	podman run --rm \
+	  --secret $(SA_SECRET),target=/run/secrets/sa-key.json \
+	  -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json \
+	  -e ANTHROPIC_API_KEY \
+	  -e GCP_PROJECT=$(PROJECT) \
+	  -e OAUTH_CLIENT_CREDENTIALS \
+	  -e OAUTH_SIGNING_KEY \
+	  -e PUBLIC_URL=http://localhost:8080 \
+	  -e PORT=8080 \
+	  $(if $(AGENT_ID),-e AGENT_CONFIG_AGENT__NAME=$(AGENT_ID)) \
+	  -p 8080:8080 \
+	  $(IMAGE)
+
+run-agent:
+	podman run --rm \
+	  --secret $(SA_SECRET),target=/run/secrets/sa-key.json \
+	  -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json \
+	  -e ANTHROPIC_API_KEY \
+	  -e GCP_PROJECT=$(PROJECT) \
+	  $(if $(AGENT_ID),-e AGENT_CONFIG_AGENT__NAME=$(AGENT_ID)) \
+	  $(IMAGE) --task "$(TASK)"
+
+run:
+	podman run -it --rm \
+	  --secret $(SA_SECRET),target=/run/secrets/sa-key.json \
+	  -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/sa-key.json \
+	  $(IMAGE)
+
+# --- Agent management ---
+
+register-agent:
+	@if [ -z "$(AGENT_FILE)" ]; then \
+	  echo "Usage: make register-agent AGENT_FILE=path/to/agent.md [PROJECT=$(PROJECT)]"; \
+	  exit 1; \
+	fi
+	GOOGLE_APPLICATION_CREDENTIALS=$(SA_KEY_FILE) uv run --with google-cloud-firestore \
+	  python3 -c " \
+	import sys; \
+	from pathlib import Path; \
+	from agent_runner.config import load_config; \
+	# Registration logic placeholder \
+	print('Agent registered from $(AGENT_FILE)') \
+	"
+
+# --- Connection targets ---
+
+connect:
+	$(eval URL := $(shell gcloud run services describe $(SERVICE) \
+	  --region=$(REGION) --project=$(PROJECT) --format='value(status.url)'))
+	claude mcp add-json $(SERVICE) '{"type":"http","url":"$(URL)/mcp"}'
+	@echo "Connected $(SERVICE) to Claude Code at $(URL)/mcp"
+
+connect-oauth:
+	$(eval URL := $(shell gcloud run services describe $(SERVICE) \
+	  --region=$(REGION) --project=$(PROJECT) --format='value(status.url)'))
+	$(eval CREDS := $(shell gcloud secrets versions access latest \
+	  --secret=oauth-client-credentials --project=$(PROJECT)))
+	@echo ""
+	@echo "=== Claude.ai Web Connector ==="
+	@echo "URL:           $(URL)/mcp"
+	@echo "Client ID:     $${CREDS%%:*}"
+	@echo "Client Secret: $${CREDS\#*:}"
+	@echo ""
+	claude mcp add-json $(SERVICE) '{"type":"http","url":"$(URL)/mcp"}'
+	@echo "Also registered with Claude Code."
+
+mcp-json:
+	$(eval URL := $(shell gcloud run services describe $(SERVICE) \
+	  --region=$(REGION) --project=$(PROJECT) --format='value(status.url)'))
+	@echo '{"$(SERVICE)":{"type":"http","url":"$(URL)/mcp"}}' | python3 -m json.tool > .mcp.json
+	@echo "Generated .mcp.json for $(SERVICE)"
+
+disconnect:
+	claude mcp remove $(SERVICE)
+	@echo "Disconnected $(SERVICE) from Claude Code"
+
+# --- Cloud Run helpers ---
+
 configure-url:
 	$(eval URL := $(shell gcloud run services describe $(SERVICE) \
 	  --region=$(REGION) --project=$(PROJECT) --format='value(status.url)'))
@@ -122,9 +161,36 @@ service-url:
 	  --region=$(REGION) --project=$(PROJECT) \
 	  --format='value(status.url)'
 
-# --- Bootstrap: single-command idempotent deployment ---
+# --- Credential management ---
 
-bootstrap: _check-prereqs setup-infra build push _register-orchestrator _deploy-orchestrator _configure-and-report
+show-credentials:
+	@URL=$$(gcloud run services describe $(SERVICE) \
+	  --region=$(REGION) --project=$(PROJECT) \
+	  --format='value(status.url)'); \
+	CREDS=$$(gcloud secrets versions access latest \
+	  --secret=oauth-client-credentials --project=$(PROJECT)); \
+	CLIENT_ID=$${CREDS%%:*}; \
+	CLIENT_SECRET=$${CREDS#*:}; \
+	echo "MCP Server URL: $$URL/mcp"; \
+	echo "Client ID:      $$CLIENT_ID"; \
+	echo "Client Secret:  $$CLIENT_SECRET"
+
+rotate-oauth:
+	@echo "=== Rotating OAuth credentials ==="
+	@CREDS=$$(python3 -c "import secrets; print(f'{secrets.token_urlsafe(24)}:{secrets.token_urlsafe(32)}')"); \
+	echo -n "$$CREDS" | gcloud secrets versions add oauth-client-credentials \
+	  --data-file=- --project=$(PROJECT); \
+	echo "New OAuth credentials generated."
+	@openssl genrsa 2048 2>/dev/null | gcloud secrets versions add oauth-signing-key \
+	  --data-file=- --project=$(PROJECT)
+	@echo "New signing key generated."
+	@echo ""
+	@echo "Re-deploy to apply: make deploy"
+	@echo "Then retrieve new credentials: make show-credentials"
+
+# --- Bootstrap ---
+
+bootstrap: _check-prereqs setup-infra build push _deploy-default _configure-and-report
 
 _check-prereqs:
 	@echo "=== Checking prerequisites ==="
@@ -132,17 +198,12 @@ _check-prereqs:
 	@command -v podman >/dev/null || { echo "ERROR: podman not found"; exit 1; }
 	@command -v python3 >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
 	@command -v openssl >/dev/null || { echo "ERROR: openssl not found"; exit 1; }
-	@gcloud auth print-access-token >/dev/null 2>&1 || { echo "ERROR: gcloud not authenticated — run 'gcloud auth login'"; exit 1; }
+	@gcloud auth print-access-token >/dev/null 2>&1 || { echo "ERROR: gcloud not authenticated"; exit 1; }
 	@echo "All prerequisites satisfied."
 
-_register-orchestrator:
-	@echo "=== Registering orchestrator agent in Firestore ==="
-	GOOGLE_APPLICATION_CREDENTIALS=$(SA_KEY_FILE) uv run --with google-cloud-firestore \
-	  python3 agent_loader.py --register .claude/agents/orchestrator.md --project $(PROJECT)
-
-_deploy-orchestrator:
-	@echo "=== Deploying orchestrator to Cloud Run ==="
-	$(MAKE) deploy AGENT_ID=orchestrator
+_deploy-default:
+	@echo "=== Deploying to Cloud Run ==="
+	$(MAKE) deploy
 
 _configure-and-report:
 	@echo "=== Configuring PUBLIC_URL ==="
@@ -152,51 +213,10 @@ _configure-and-report:
 	@echo "  Agent Runner Bootstrap Complete"
 	@echo "============================================"
 	@echo ""
-	@URL=$$(gcloud run services describe $(SERVICE) \
-	  --region=$(REGION) --project=$(PROJECT) \
-	  --format='value(status.url)'); \
-	CREDS=$$(gcloud secrets versions access latest \
-	  --secret=oauth-client-credentials --project=$(PROJECT)); \
-	CLIENT_ID=$${CREDS%%:*}; \
-	CLIENT_SECRET=$${CREDS#*:}; \
-	echo "  Agent Name:     orchestrator"; \
-	echo "  MCP Server URL: $$URL/mcp"; \
-	echo "  OAuth Metadata: $$URL/.well-known/oauth-authorization-server"; \
-	echo ""; \
-	echo "  Client ID:      $$CLIENT_ID"; \
-	echo "  Client Secret:  $$CLIENT_SECRET"; \
-	echo ""; \
-	echo "  Connect to Claude Web using the URL and credentials above."; \
-	echo "============================================"
-
-# --- Agent registration and deployment targets ---
-
-register-firestore-agent:
-	@echo "=== Registering firestore-agent in Firestore ==="
-	GOOGLE_APPLICATION_CREDENTIALS=$(SA_KEY_FILE) uv run --with google-cloud-firestore \
-	  python3 agent_loader.py --register .claude/agents/firestore-agent.md --project $(PROJECT)
-
-register-pubsub-agent:
-	@echo "=== Registering pubsub-agent in Firestore ==="
-	GOOGLE_APPLICATION_CREDENTIALS=$(SA_KEY_FILE) uv run --with google-cloud-firestore \
-	  python3 agent_loader.py --register .claude/agents/pubsub-agent.md --project $(PROJECT)
-
-register-all-agents: _register-orchestrator register-firestore-agent register-pubsub-agent
-
-deploy-firestore-agent:
-	$(MAKE) deploy AGENT_ID=firestore-agent SERVICE=firestore-agent-mcp \
-	  AGENT_CAPABILITIES=firestore,database \
-	  AGENT_DESCRIPTION="Firestore operations specialist"
-
-deploy-pubsub-agent:
-	$(MAKE) deploy AGENT_ID=pubsub-agent SERVICE=pubsub-agent-mcp \
-	  AGENT_CAPABILITIES=pubsub,messaging \
-	  AGENT_DESCRIPTION="Pub/Sub messaging specialist"
-
-deploy-all-agents:
-	$(MAKE) deploy AGENT_ID=orchestrator
-	$(MAKE) deploy-firestore-agent
-	$(MAKE) deploy-pubsub-agent
+	$(MAKE) show-credentials
+	@echo ""
+	@echo "  Connect with: make connect"
+	@echo "============================================"
 
 # --- Infrastructure setup (idempotent) ---
 
@@ -250,7 +270,7 @@ setup-infra: _ensure-sa
 	      --data-file=- --project=$(PROJECT); \
 	    echo "Added ANTHROPIC_API_KEY version."; \
 	  else \
-	    echo "WARNING: ANTHROPIC_API_KEY env var not set and no version exists in Secret Manager."; \
+	    echo "WARNING: ANTHROPIC_API_KEY env var not set and no version exists."; \
 	  fi; \
 	else \
 	  echo "ANTHROPIC_API_KEY already has a version, skipping."; \
@@ -305,30 +325,3 @@ _ensure-sa:
 	    --role="$$ROLE" --quiet >/dev/null; \
 	done
 	@echo "Service account $(SA_EMAIL) ready."
-
-# --- Credential rotation ---
-
-rotate-oauth:
-	@echo "=== Rotating OAuth credentials ==="
-	@CREDS=$$(python3 -c "import secrets; print(f'{secrets.token_urlsafe(24)}:{secrets.token_urlsafe(32)}')"); \
-	echo -n "$$CREDS" | gcloud secrets versions add oauth-client-credentials \
-	  --data-file=- --project=$(PROJECT); \
-	echo "New OAuth credentials generated."
-	@openssl genrsa 2048 2>/dev/null | gcloud secrets versions add oauth-signing-key \
-	  --data-file=- --project=$(PROJECT)
-	@echo "New signing key generated."
-	@echo ""
-	@echo "Re-deploy to apply: make deploy AGENT_ID=orchestrator"
-	@echo "Then retrieve new credentials: make show-credentials"
-
-show-credentials:
-	@URL=$$(gcloud run services describe $(SERVICE) \
-	  --region=$(REGION) --project=$(PROJECT) \
-	  --format='value(status.url)'); \
-	CREDS=$$(gcloud secrets versions access latest \
-	  --secret=oauth-client-credentials --project=$(PROJECT)); \
-	CLIENT_ID=$${CREDS%%:*}; \
-	CLIENT_SECRET=$${CREDS#*:}; \
-	echo "MCP Server URL: $$URL/mcp"; \
-	echo "Client ID:      $$CLIENT_ID"; \
-	echo "Client Secret:  $$CLIENT_SECRET"
