@@ -1,0 +1,80 @@
+# Agent Runner configuration
+# See CLAUDE.md for full documentation.
+
+agent:
+  name: "my-agent"
+  description: "What this agent does"
+  model: "claude-sonnet-4-6"        # claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5
+  # system_prompt: "Custom system prompt (optional, loaded from .claude/agents/ if omitted)"
+  max_turns: 50
+  timeout: 300
+  allowed_tools:
+    - Read
+    - Write
+    - Edit
+    - Bash
+    - Glob
+    - Grep
+
+# External MCP servers the agent can call as a client
+mcp_servers:
+  # HTTP MCP server (remote)
+  # firestore:
+  #   type: url
+  #   url: "https://firestore.googleapis.com/mcp"
+
+  # Stdio MCP server (local process)
+  # custom-api:
+  #   type: stdio
+  #   command: "python"
+  #   args: ["-m", "my_mcp_server"]
+  #   env:
+  #     API_KEY: "secret:my-api-key"
+
+# In-process subagents (invoked via Agent tool)
+subagents:
+  # Local subagent (runs in same container)
+  # code-reviewer:
+  #   type: local
+  #   description: "Reviews code for quality"
+  #   prompt: "You are a code reviewer..."
+  #   tools: ["Read", "Glob", "Grep"]
+  #   model: "claude-haiku-4-5"
+
+  # Remote subagent (discovered from registry or direct URL)
+  # firestore-agent:
+  #   type: remote
+  #   discovery: registry    # Look up in Firestore registry
+  #   # Or specify URL directly:
+  #   # url: "https://firestore-agent-xxx.run.app"
+
+# A2A (Agent-to-Agent) protocol settings
+a2a:
+  enabled: true
+  skills:
+    - id: "run_task"
+      name: "Execute agent task"
+      description: "Run a task using this agent"
+      tags: ["general"]
+
+# Server settings
+server:
+  host: "0.0.0.0"
+  port: 8080
+  public_url: "http://localhost:8080"  # Set to Cloud Run URL after deploy
+  min_instances: 0                      # 0 = serverless, 1+ = always-on
+
+# Hook configuration
+hooks:
+  reflection:
+    enabled: true
+    firestore_project: "claude-connectors"
+    firestore_database: "agents"
+    collection: "session_learnings"
+  audit:
+    enabled: true
+
+# GCP settings
+gcp:
+  project: "claude-connectors"
+  region: "us-central1"

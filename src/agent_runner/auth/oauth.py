@@ -1,14 +1,17 @@
-"""OAuth 2.1 authorization server for Claude web MCP connector compatibility.
+"""OAuth 2.1 authorization server for MCP connector compatibility.
 
 Implements RFC 8414 metadata, authorization code flow with PKCE, and JWKS.
 Single-tenant: auto-approves authorization for valid client_id.
 Stateless auth codes: encoded as signed JWTs to survive scale-to-zero.
 """
 
-import hashlib
+from __future__ import annotations
+
 import base64
-import time
+import hashlib
+import os
 import secrets
+import time
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -31,7 +34,7 @@ class OAuthConfig:
 
 
 def _public_jwk(key: rsa.RSAPrivateKey) -> dict:
-    from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
+    """Build a JWK dict from an RSA private key."""
     pub = key.public_key()
     nums = pub.public_numbers()
 
@@ -53,7 +56,25 @@ def _encode_jwt(payload: dict, key: rsa.RSAPrivateKey) -> str:
     return jwt.encode(payload, key, algorithm="RS256", headers={"kid": "mcp-signing-key"})
 
 
+def load_oauth_config(public_url: str) -> OAuthConfig | None:
+    """Load OAuth config from environment variables. Returns None if not configured."""
+    creds = os.environ.get("OAUTH_CLIENT_CREDENTIALS", "")
+    key_pem = os.environ.get("OAUTH_SIGNING_KEY", "")
+    if not creds or not key_pem:
+        return None
+
+    client_id, _, client_secret = creds.partition(":")
+    signing_key = serialization.load_pem_private_key(key_pem.encode(), password=None)
+    return OAuthConfig(
+        client_id=client_id,
+        client_secret=client_secret,
+        signing_key=signing_key,
+        public_url=public_url,
+    )
+
+
 def create_oauth_app(config: OAuthConfig) -> Starlette:
+    """Create a Starlette app with OAuth 2.1 endpoints."""
     jwk = _public_jwk(config.signing_key)
 
     async def metadata(request: Request) -> JSONResponse:
@@ -65,7 +86,9 @@ def create_oauth_app(config: OAuthConfig) -> Starlette:
             "jwks_uri": f"{base}/.well-known/jwks.json",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code"],
-            "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
+            "token_endpoint_auth_methods_supported": [
+                "client_secret_post", "client_secret_basic",
+            ],
             "code_challenge_methods_supported": ["S256"],
         })
 
@@ -86,7 +109,10 @@ def create_oauth_app(config: OAuthConfig) -> Starlette:
         if client_id != config.client_id:
             return JSONResponse({"error": "invalid_client"}, status_code=400)
         if code_challenge_method != "S256":
-            return JSONResponse({"error": "invalid_request", "error_description": "S256 required"}, status_code=400)
+            return JSONResponse(
+                {"error": "invalid_request", "error_description": "S256 required"},
+                status_code=400,
+            )
         if not redirect_uri or not code_challenge:
             return JSONResponse({"error": "invalid_request"}, status_code=400)
 
@@ -99,7 +125,6 @@ def create_oauth_app(config: OAuthConfig) -> Starlette:
             "jti": secrets.token_urlsafe(16),
         }
         code = _encode_jwt(code_payload, config.signing_key)
-
         qs = urlencode({"code": code, "state": state})
         return RedirectResponse(f"{redirect_uri}?{qs}", status_code=302)
 
@@ -131,7 +156,10 @@ def create_oauth_app(config: OAuthConfig) -> Starlette:
             pub_key = config.signing_key.public_key()
             claims = jwt.decode(code, pub_key, algorithms=["RS256"])
         except jwt.ExpiredSignatureError:
-            return JSONResponse({"error": "invalid_grant", "error_description": "code expired"}, status_code=400)
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "code expired"},
+                status_code=400,
+            )
         except jwt.PyJWTError:
             return JSONResponse({"error": "invalid_grant"}, status_code=400)
 
@@ -145,7 +173,10 @@ def create_oauth_app(config: OAuthConfig) -> Starlette:
         digest = hashlib.sha256(code_verifier.encode()).digest()
         expected_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
         if expected_challenge != claims.get("code_challenge"):
-            return JSONResponse({"error": "invalid_grant", "error_description": "PKCE verification failed"}, status_code=400)
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "PKCE verification failed"},
+                status_code=400,
+            )
 
         now = int(time.time())
         access_token = _encode_jwt({
