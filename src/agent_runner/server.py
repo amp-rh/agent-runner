@@ -59,8 +59,7 @@ def create_app(config: AppConfig) -> Starlette:
 
     # Create MCP server
     mcp = create_mcp_server(config, agent_runner)
-    mcp_app = mcp.streamable_http_app()
-    session_manager = mcp._session_manager
+    mcp_app = mcp.http_app()
 
     # Build routes
     routes = []
@@ -84,7 +83,7 @@ def create_app(config: AppConfig) -> Starlette:
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
-        async with session_manager.run():
+        async with mcp_app.lifespan(mcp_app):
             _register_agent(config)
             yield
 
