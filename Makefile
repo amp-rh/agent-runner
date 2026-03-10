@@ -1,5 +1,8 @@
 comma := ,
 
+# Container runtime: prefer docker, fall back to podman
+CONTAINER_RUNTIME ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null || echo docker)
+
 # Configurable via environment variables
 PROJECT      ?= claude-connectors
 REGION       ?= us-central1
@@ -31,11 +34,11 @@ all: build
 # --- Core targets ---
 
 build:
-	podman build -f Containerfile -t $(IMAGE) .
+	$(CONTAINER_RUNTIME) build -f Containerfile -t $(IMAGE) .
 
 push: build
-	podman tag $(IMAGE) $(IMAGE_TAG)
-	podman push $(IMAGE_TAG)
+	$(CONTAINER_RUNTIME) tag $(IMAGE) $(IMAGE_TAG)
+	$(CONTAINER_RUNTIME) push $(IMAGE_TAG)
 
 deploy:
 	$(eval SERVICE_URL := $(shell gcloud run services describe $(SERVICE) \
@@ -90,7 +93,7 @@ lint:
 # --- Local development ---
 
 run-server:
-	podman run --rm \
+	$(CONTAINER_RUNTIME) run --rm \
 	  -e ANTHROPIC_API_KEY \
 	  -e GCP_PROJECT=$(PROJECT) \
 	  -e OAUTH_CLIENT_CREDENTIALS \
@@ -102,14 +105,14 @@ run-server:
 	  $(IMAGE)
 
 run-agent:
-	podman run --rm \
+	$(CONTAINER_RUNTIME) run --rm \
 	  -e ANTHROPIC_API_KEY \
 	  -e GCP_PROJECT=$(PROJECT) \
 	  $(if $(AGENT_ID),-e AGENT_CONFIG_AGENT__NAME=$(AGENT_ID)) \
 	  $(IMAGE) --task "$(TASK)"
 
 run:
-	podman run -it --rm $(IMAGE)
+	$(CONTAINER_RUNTIME) run -it --rm $(IMAGE)
 
 # --- Agent management ---
 
@@ -231,7 +234,7 @@ bootstrap-source: _check-prereqs-source setup-infra _deploy-source-default _conf
 _check-prereqs:
 	@echo "=== Checking prerequisites ==="
 	@command -v gcloud >/dev/null || { echo "ERROR: gcloud not found"; exit 1; }
-	@command -v podman >/dev/null || { echo "ERROR: podman not found"; exit 1; }
+	@command -v $(CONTAINER_RUNTIME) >/dev/null || { echo "ERROR: container runtime not found (tried docker/podman)"; exit 1; }
 	@command -v python3 >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
 	@command -v openssl >/dev/null || { echo "ERROR: openssl not found"; exit 1; }
 	@gcloud auth print-access-token >/dev/null 2>&1 || { echo "ERROR: gcloud not authenticated. Run: gcloud auth login"; exit 1; }
