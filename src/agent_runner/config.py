@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AgentConfig(BaseModel):
@@ -96,6 +96,14 @@ class AppConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     subagents: dict[str, SubagentConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _remove_none_top_level(cls, data: Any) -> Any:
+        """Strip None values so default_factory applies instead of failing validation."""
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v is not None}
+        return data
     a2a: A2AConfig = Field(default_factory=A2AConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     invocation: InvocationConfig = Field(default_factory=InvocationConfig)
