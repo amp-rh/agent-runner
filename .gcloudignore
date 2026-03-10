@@ -1,0 +1,13 @@
+.gcloudignore
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+dist/
+*.egg-info/
+sa-key.json
+agent-config.yaml
+.mcp.json

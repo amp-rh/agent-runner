@@ -1,0 +1,50 @@
+# Agent configuration for the gcloud-dev-mcp Cloud Run service.
+# Deploys the gcloud-operator agent using the agent-runner image,
+# which has the Google Cloud SDK pre-installed.
+#
+# Deploy with:
+#   make deploy-gcloud-dev
+#
+# Or via env overrides at runtime:
+#   AGENT_CONFIG_AGENT__NAME=gcloud-dev
+
+agent:
+  name: "gcloud-operator"
+  description: "Google Cloud Platform operator — manages GCP resources via gcloud CLI"
+  model: "claude-opus-4-6"
+  max_turns: 50
+  timeout: 600
+  allowed_tools:
+    - Read
+    - Write
+    - Edit
+    - Bash
+    - Glob
+    - Grep
+
+a2a:
+  enabled: true
+  skills:
+    - id: "run_task"
+      name: "Execute GCP operation"
+      description: "Run a GCP management task using the gcloud CLI"
+      tags: ["gcp", "gcloud", "cloud-run", "iam", "infrastructure"]
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  public_url: "http://localhost:8080"
+  min_instances: 0
+
+hooks:
+  reflection:
+    enabled: true
+    firestore_project: "claude-connectors"
+    firestore_database: "agents"
+    collection: "session_learnings"
+  audit:
+    enabled: true
+
+gcp:
+  project: "claude-connectors"
+  region: "us-central1"

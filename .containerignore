@@ -1,0 +1,17 @@
+*.json
+.claude/
+!.claude/agents/
+.git/
+*.pem
+*.key
+.env
+.env.example
+.gitignore
+.containerignore
+.mcp.json
+CLAUDE.md
+README.md
+tests/
+.pytest_cache/
+__pycache__/
+*.egg-info/
