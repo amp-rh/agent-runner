@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from a2a.types import (
-    AgentAuthentication,
     AgentCapabilities,
     AgentCard,
     AgentSkill,
@@ -32,6 +31,11 @@ def build_agent_card(config: AppConfig) -> AgentCard:
         url=config.server.public_url,
         version="2.0.0",
         skills=skills,
+        defaultInputModes=["text/plain"],
+        defaultOutputModes=["text/plain"],
         capabilities=AgentCapabilities(streaming=True),
-        authentication=AgentAuthentication(schemes=["bearer"]),
+        securitySchemes={
+            "bearer": {"type": "http", "scheme": "bearer"},
+        },
+        security=[{"bearer": []}],
     )
