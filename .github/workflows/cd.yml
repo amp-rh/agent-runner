@@ -1,0 +1,156 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+env:
+  GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  GCP_PROJECT: ${{ vars.GCP_PROJECT || 'claude-connectors' }}
+  SERVICE_NAME: ${{ vars.CLOUD_RUN_SERVICE || 'agent-runner-mcp' }}
+  AR_REPO: ${{ vars.AR_REPO || 'agent-runner' }}
+  IMAGE_NAME: agent-runner
+
+jobs:
+  build-and-push:
+    name: Build & push image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      image_ref: ${{ steps.image-ref.outputs.image_ref }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+            type=raw,value={{date 'YYYYMMDD'}}-{{sha}}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Containerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-name: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Set image reference output
+        id: image-ref
+        run: |
+          echo "image_ref=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: build-and-push
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      service_url: ${{ steps.url.outputs.service_url }}
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE_NAME" \
+            --image="${{ needs.build-and-push.outputs.image_ref }}" \
+            --region="$GCP_REGION" \
+            --project="$GCP_PROJECT" \
+            --service-account="${{ secrets.GCP_SERVICE_ACCOUNT }}" \
+            --update-env-vars="GCP_PROJECT=$GCP_PROJECT" \
+            --update-secrets=ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OAUTH_CLIENT_CREDENTIALS=oauth-client-credentials:latest,OAUTH_SIGNING_KEY=oauth-signing-key:latest \
+            --memory=512Mi \
+            --cpu=1 \
+            --timeout=600 \
+            --concurrency=10 \
+            --cpu-throttling \
+            --min-instances=0 \
+            --max-instances=1 \
+            --allow-unauthenticated \
+            --port=8080
+
+      - name: Get service URL
+        id: url
+        run: |
+          SERVICE_URL=$(gcloud run services describe "$SERVICE_NAME" \
+            --region="$GCP_REGION" \
+            --project="$GCP_PROJECT" \
+            --format='value(status.url)')
+          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Set PUBLIC_URL on service
+        run: |
+          gcloud run services update "$SERVICE_NAME" \
+            --region="$GCP_REGION" \
+            --project="$GCP_PROJECT" \
+            --update-env-vars="PUBLIC_URL=${{ steps.url.outputs.service_url }}"
+
+  health-check:
+    name: Health check
+    needs: deploy
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Verify service is healthy
+        run: |
+          sleep 10
+          HTTP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            "${{ needs.deploy.outputs.service_url }}/.well-known/agent.json" \
+            --max-time 30 --retry 3 --retry-delay 5)
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "::error::Health check failed with HTTP status $HTTP_STATUS"
+            exit 1
+          fi
+          echo "Health check passed (HTTP 200)"
