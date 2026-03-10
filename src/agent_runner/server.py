@@ -8,17 +8,43 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from starlette.applications import Starlette
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from starlette.routing import Mount
 
 if TYPE_CHECKING:
     from agent_runner.config import AppConfig
 
 
+class PublicURLMiddleware(BaseHTTPMiddleware):
+    """Auto-derive public_url from the first non-localhost request Host header.
+
+    On Cloud Run, the service URL is not known until the first request arrives.
+    This middleware captures the Host header and updates config.server.public_url,
+    then re-registers the agent with the correct URL.
+    """
+
+    def __init__(self, app, config: AppConfig):
+        super().__init__(app)
+        self._config = config
+        self._resolved = False
+
+    async def dispatch(self, request: Request, call_next):
+        if not self._resolved and self._config.server.public_url == "http://localhost:8080":
+            host = request.headers.get("host", "")
+            if host and not host.startswith("localhost"):
+                scheme = request.headers.get("x-forwarded-proto", "https")
+                self._config.server.public_url = f"{scheme}://{host}"
+                self._resolved = True
+                _register_agent(self._config)
+        return await call_next(request)
+
+
 def create_app(config: AppConfig) -> Starlette:
     """Create the composed Starlette application."""
     from agent_runner.agent import AgentRunner
     from agent_runner.auth.middleware import BearerAuthMiddleware
-    from agent_runner.auth.oauth import OAuthConfig, create_oauth_app, load_oauth_config
+    from agent_runner.auth.oauth import create_oauth_app, load_oauth_config
     from agent_runner.hooks.registry import build_hooks
     from agent_runner.mcp.server import create_mcp_server
 
@@ -64,6 +90,7 @@ def create_app(config: AppConfig) -> Starlette:
 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.add_middleware(BearerAuthMiddleware, oauth_config=oauth_config)
+    app.add_middleware(PublicURLMiddleware, config=config)
 
     return app
 

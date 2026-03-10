@@ -16,7 +16,7 @@ class AgentConfig(BaseModel):
     model: str = "claude-sonnet-4-6"
     system_prompt: str = ""
     max_turns: int = 50
-    timeout: int = 300
+    timeout: int = 600
     allowed_tools: list[str] = Field(default_factory=lambda: [
         "Read", "Write", "Edit", "Bash", "Glob", "Grep",
     ])
@@ -149,6 +149,37 @@ def _apply_legacy_env(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _apply_firestore_config(data: dict[str, Any]) -> dict[str, Any]:
+    """Merge config fields from Firestore agents/{name} document.
+
+    Precedence: YAML < Firestore < env vars. Firestore values override
+    YAML defaults but are themselves overridden by env var settings.
+    Failure is non-fatal (logged to stderr).
+    """
+    agent_name = data.get("agent", {}).get("name")
+    if not agent_name:
+        return data
+
+    try:
+        from google.cloud.firestore import Client
+
+        project = data.get("gcp", {}).get("project", "claude-connectors")
+        db = Client(project=project, database="agents")
+        doc = db.collection("agents").document(agent_name).get()
+        if doc.exists:
+            fs_data = doc.to_dict()
+            agent = data.setdefault("agent", {})
+            for field in ("system_prompt", "description", "model", "timeout", "max_turns"):
+                if field in fs_data:
+                    agent[field] = fs_data[field]
+    except Exception as exc:
+        import sys
+
+        print(f"Firestore config lookup failed (non-fatal): {exc}", file=sys.stderr)
+
+    return data
+
+
 def load_config(path: Path | str | None = None) -> AppConfig:
     """Load config from YAML file with env var overrides."""
     data: dict[str, Any] = {}
@@ -163,6 +194,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
                 data = yaml.safe_load(config_path.read_text()) or {}
                 break
 
+    _apply_firestore_config(data)
     _apply_legacy_env(data)
     _apply_env_overrides(data)
 

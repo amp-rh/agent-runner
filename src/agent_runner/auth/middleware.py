@@ -38,12 +38,10 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             jwks_uri = os.environ.get("OAUTH2_JWKS_URI", "")
             self._jwks_client = PyJWKClient(jwks_uri, cache_keys=True) if jwks_uri else None
 
-        self._audience = os.environ.get("OAUTH2_AUDIENCE") or (
-            oauth_config.public_url if oauth_config else None
-        )
-        self._issuer = os.environ.get("OAUTH2_ISSUER") or (
-            oauth_config.public_url if oauth_config else None
-        )
+        # Audience/issuer: use explicit env vars if set, otherwise derive
+        # dynamically from the request Host header at dispatch time.
+        self._explicit_audience = os.environ.get("OAUTH2_AUDIENCE") or None
+        self._explicit_issuer = os.environ.get("OAUTH2_ISSUER") or None
 
     async def dispatch(self, request: Request, call_next):
         if request.url.path in OPEN_PATHS:
@@ -62,18 +60,21 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             )
 
         token = auth[len("Bearer "):]
+
+        # Derive audience/issuer from request if not explicitly configured,
+        # so tokens minted with the Host-derived base URL are accepted.
+        request_base = str(request.base_url).rstrip("/")
+        audience = self._explicit_audience or request_base
+        issuer = self._explicit_issuer or request_base
+
         try:
             if self._local_public_key:
                 jwt.decode(
                     token,
                     self._local_public_key,
                     algorithms=["RS256"],
-                    audience=self._audience,
-                    issuer=self._issuer,
-                    options={
-                        "verify_aud": bool(self._audience),
-                        "verify_iss": bool(self._issuer),
-                    },
+                    audience=audience,
+                    issuer=issuer,
                 )
             else:
                 signing_key = self._jwks_client.get_signing_key_from_jwt(token)
@@ -81,12 +82,8 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                     token,
                     signing_key.key,
                     algorithms=["RS256"],
-                    audience=self._audience,
-                    issuer=self._issuer,
-                    options={
-                        "verify_aud": bool(self._audience),
-                        "verify_iss": bool(self._issuer),
-                    },
+                    audience=audience,
+                    issuer=issuer,
                 )
         except jwt.exceptions.PyJWTError as exc:
             return JSONResponse(

@@ -1,9 +1,7 @@
 """Tests for A2A Agent Card generation."""
 
-import pytest
-
 from agent_runner.a2a.card import build_agent_card
-from agent_runner.config import AppConfig, load_config
+from agent_runner.config import load_config
 
 
 def test_build_agent_card_defaults():

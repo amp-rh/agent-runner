@@ -3,14 +3,14 @@
 import base64
 import hashlib
 import secrets
-import time
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
+from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from agent_runner.auth.middleware import BearerAuthMiddleware, OPEN_PATHS
 from agent_runner.auth.oauth import OAuthConfig, create_oauth_app
 
 
@@ -39,7 +39,7 @@ def test_metadata_endpoint(oauth_client):
     resp = oauth_client.get("/.well-known/oauth-authorization-server")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["issuer"] == "http://localhost:8080"
+    assert data["issuer"] == "http://testserver"
     assert "authorization_endpoint" in data
     assert "token_endpoint" in data
     assert "S256" in data["code_challenge_methods_supported"]
@@ -141,7 +141,7 @@ def test_full_oauth_flow(oauth_client, oauth_config):
         data["access_token"],
         pub_key,
         algorithms=["RS256"],
-        audience="http://localhost:8080",
+        audience="http://testserver",
     )
     assert claims["sub"] == "test-client"
 
@@ -150,4 +150,45 @@ def test_protected_resource_endpoint(oauth_client):
     resp = oauth_client.get("/.well-known/oauth-protected-resource")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["resource"] == "http://localhost:8080/mcp"
+    assert data["resource"] == "http://testserver/mcp"
+
+
+def test_agent_card_in_open_paths():
+    """/.well-known/agent.json must be in OPEN_PATHS to avoid 401 (issue #17)."""
+    assert "/.well-known/agent.json" in OPEN_PATHS
+
+
+def test_open_paths_bypass_auth(oauth_config):
+    """All OPEN_PATHS return 200 without auth when using the middleware."""
+    from starlette.requests import Request
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    async def ok(request: Request) -> PlainTextResponse:
+        return PlainTextResponse("ok")
+
+    routes = [Route(path, ok) for path in OPEN_PATHS]
+    inner_app = Starlette(routes=routes)
+    inner_app.add_middleware(BearerAuthMiddleware, oauth_config=oauth_config)
+    client = TestClient(inner_app, raise_server_exceptions=False)
+
+    for path in OPEN_PATHS:
+        resp = client.get(path)
+        assert resp.status_code == 200, f"{path} returned {resp.status_code}, expected 200"
+
+
+def test_auth_required_for_non_open_paths(oauth_config):
+    """Non-open paths return 401 without a bearer token."""
+    from starlette.requests import Request
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    async def ok(request: Request) -> PlainTextResponse:
+        return PlainTextResponse("ok")
+
+    inner_app = Starlette(routes=[Route("/mcp", ok)])
+    inner_app.add_middleware(BearerAuthMiddleware, oauth_config=oauth_config)
+    client = TestClient(inner_app, raise_server_exceptions=False)
+
+    resp = client.get("/mcp")
+    assert resp.status_code == 401

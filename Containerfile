@@ -1,6 +1,6 @@
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS base
 
-RUN microdnf install -y which tar gzip findutils \
+RUN microdnf install -y which tar gzip findutils git \
       --nodocs --setopt=install_weak_deps=0 && \
     microdnf clean all
 
@@ -46,7 +46,7 @@ RUN cd /app && UV_PYTHON_INSTALL_MIRROR="" uv pip install --system --python pyth
     find /usr/local/lib/uv/python -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; \
     rm -rf /usr/share/doc /usr/share/man /var/cache/dnf /var/lib/rpm; true
 
-COPY agent-config.yaml /etc/agent-runner/config.yaml
+COPY agent-config.example.yaml /etc/agent-runner/config.yaml
 RUN mkdir -p /home/user/.claude/agents && chown -R 1001:1001 /home/user
 COPY --chown=1001:1001 .claude/agents/gcloud-operator.md /home/user/.claude/agents/gcloud-operator.md
 

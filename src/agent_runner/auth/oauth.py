@@ -78,7 +78,7 @@ def create_oauth_app(config: OAuthConfig) -> Starlette:
     jwk = _public_jwk(config.signing_key)
 
     async def metadata(request: Request) -> JSONResponse:
-        base = config.public_url.rstrip("/")
+        base = str(request.base_url).rstrip("/")
         return JSONResponse({
             "issuer": base,
             "authorization_endpoint": f"{base}/authorize",
@@ -179,10 +179,11 @@ def create_oauth_app(config: OAuthConfig) -> Starlette:
             )
 
         now = int(time.time())
+        base = str(request.base_url).rstrip("/")
         access_token = _encode_jwt({
-            "iss": config.public_url,
+            "iss": base,
             "sub": client_id,
-            "aud": config.public_url,
+            "aud": base,
             "exp": now + config.token_ttl,
             "iat": now,
             "jti": secrets.token_urlsafe(16),
@@ -195,7 +196,7 @@ def create_oauth_app(config: OAuthConfig) -> Starlette:
         })
 
     async def protected_resource(request: Request) -> JSONResponse:
-        base = config.public_url.rstrip("/")
+        base = str(request.base_url).rstrip("/")
         return JSONResponse({
             "resource": f"{base}/mcp",
             "authorization_servers": [base],

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import sys
 from typing import TYPE_CHECKING
 
 from claude_agent_sdk import (
@@ -50,17 +48,25 @@ class AgentRunner:
 
     async def run(self, prompt: str) -> str:
         """Run a task and return the text result."""
+        import asyncio
+
         options = self._build_options()
         client = ClaudeSDKClient(options=options)
+        timeout_seconds = self._config.agent.timeout
 
         texts: list[str] = []
         try:
-            await client.connect(prompt)
-            async for message in client.receive_messages():
-                if isinstance(message, ResultMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            texts.append(block.text)
+            async with asyncio.timeout(timeout_seconds):
+                await client.connect(prompt)
+                async for message in client.receive_messages():
+                    if isinstance(message, ResultMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                texts.append(block.text)
+        except TimeoutError:
+            return f"Task timed out after {timeout_seconds}s. Consider increasing agent.timeout."
+        except Exception as exc:
+            return f"Task failed: {type(exc).__name__}: {exc}"
         finally:
             await client.disconnect()
 

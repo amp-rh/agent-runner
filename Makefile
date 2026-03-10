@@ -5,10 +5,14 @@ PROJECT      ?= claude-connectors
 REGION       ?= us-central1
 REPO         ?= agent-runner
 IMAGE        ?= agent-runner
-SERVICE      ?= $(IMAGE)-mcp
 SA_NAME      ?= claude-connector
 SA_EMAIL     ?= $(SA_NAME)@$(PROJECT).iam.gserviceaccount.com
 AGENT_ID     ?=
+ifdef AGENT_ID
+  SERVICE    ?= $(AGENT_ID)-mcp
+else
+  SERVICE    ?= $(IMAGE)-mcp
+endif
 AGENT_FILE   ?=
 FIRESTORE_LOCATION ?= nam5
 
@@ -49,7 +53,7 @@ deploy:
 	  --max-instances=1 \
 	  --memory=512Mi \
 	  --cpu=1 \
-	  --timeout=300 \
+	  --timeout=600 \
 	  --concurrency=10 \
 	  --cpu-throttling \
 	  --allow-unauthenticated \
@@ -71,7 +75,7 @@ deploy-source:
 	  --max-instances=1 \
 	  --memory=512Mi \
 	  --cpu=1 \
-	  --timeout=300 \
+	  --timeout=600 \
 	  --concurrency=10 \
 	  --cpu-throttling \
 	  --allow-unauthenticated \
@@ -339,7 +343,8 @@ _ensure-sa:
 	  --display-name="Agent Runner Service Account"
 	@echo "--- Granting project-level IAM roles to SA ---"
 	@for ROLE in roles/run.admin roles/secretmanager.admin roles/datastore.user \
-	  roles/pubsub.publisher roles/artifactregistry.writer roles/iam.serviceAccountUser; do \
+	  roles/pubsub.publisher roles/artifactregistry.writer roles/iam.serviceAccountUser \
+	  roles/cloudbuild.builds.editor roles/storage.admin; do \
 	  gcloud projects add-iam-policy-binding $(PROJECT) \
 	    --member="serviceAccount:$(SA_EMAIL)" \
 	    --role="$$ROLE" --quiet >/dev/null; \

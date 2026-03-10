@@ -1,13 +1,8 @@
 """Tests for config loading, env overrides, and validation."""
 
-import os
-import tempfile
-from pathlib import Path
-
-import pytest
 import yaml
 
-from agent_runner.config import AppConfig, load_config
+from agent_runner.config import load_config
 
 
 def test_default_config():
@@ -15,6 +10,7 @@ def test_default_config():
     config = load_config(path="/nonexistent/path.yaml")
     assert config.agent.name == "gcloud-operator"
     assert config.agent.model == "claude-sonnet-4-6"
+    assert config.agent.timeout == 600
     assert config.server.port == 8080
     assert config.gcp.project == "claude-connectors"
 
@@ -113,3 +109,118 @@ def test_empty_yaml(tmp_path):
 
     config = load_config(path=cfg_file)
     assert config.agent.name == "gcloud-operator"
+
+
+def test_firestore_config_merged(monkeypatch, tmp_path):
+    """Firestore config fields are merged after YAML, before env vars."""
+    from unittest.mock import MagicMock, patch
+
+    cfg = {"agent": {"name": "test-agent"}, "gcp": {"project": "test-proj"}}
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+
+    # Mock Firestore client
+    mock_doc = MagicMock()
+    mock_doc.exists = True
+    mock_doc.to_dict.return_value = {
+        "system_prompt": "You are a test agent.",
+        "description": "Test agent from Firestore",
+        "timeout": 900,
+    }
+
+    mock_collection = MagicMock()
+    mock_collection.document.return_value.get.return_value = mock_doc
+
+    mock_client = MagicMock()
+    mock_client.return_value.collection.return_value = mock_collection
+
+    with patch("agent_runner.config.Client", mock_client, create=True):
+        # Patch the import inside _apply_firestore_config
+        import agent_runner.config as config_mod
+        original = config_mod._apply_firestore_config
+
+        def patched_apply(data):
+            import sys
+            mock_module = MagicMock()
+            mock_module.Client = mock_client
+            sys.modules["google.cloud.firestore"] = mock_module
+            try:
+                return original(data)
+            finally:
+                del sys.modules["google.cloud.firestore"]
+
+        with patch.object(config_mod, "_apply_firestore_config", patched_apply):
+            config = load_config(path=cfg_file)
+
+    assert config.agent.system_prompt == "You are a test agent."
+    assert config.agent.description == "Test agent from Firestore"
+    assert config.agent.timeout == 900
+
+
+def test_firestore_config_env_override_takes_precedence(monkeypatch, tmp_path):
+    """Env var overrides take precedence over Firestore values."""
+    from unittest.mock import MagicMock, patch
+
+    cfg = {"agent": {"name": "test-agent"}, "gcp": {"project": "test-proj"}}
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+
+    mock_doc = MagicMock()
+    mock_doc.exists = True
+    mock_doc.to_dict.return_value = {"description": "From Firestore"}
+
+    mock_collection = MagicMock()
+    mock_collection.document.return_value.get.return_value = mock_doc
+    mock_client = MagicMock()
+    mock_client.return_value.collection.return_value = mock_collection
+
+    monkeypatch.setenv("AGENT_CONFIG_AGENT__DESCRIPTION", "From env")
+
+    import agent_runner.config as config_mod
+    original = config_mod._apply_firestore_config
+
+    def patched_apply(data):
+        mock_module = MagicMock()
+        mock_module.Client = mock_client
+        import sys
+        sys.modules["google.cloud.firestore"] = mock_module
+        try:
+            return original(data)
+        finally:
+            del sys.modules["google.cloud.firestore"]
+
+    with patch.object(config_mod, "_apply_firestore_config", patched_apply):
+        config = load_config(path=cfg_file)
+
+    # Env var should win over Firestore
+    assert config.agent.description == "From env"
+
+
+def test_firestore_config_failure_nonfatal(tmp_path, capsys):
+    """Firestore lookup failure is non-fatal."""
+    from unittest.mock import MagicMock, patch
+
+    cfg = {"agent": {"name": "test-agent"}, "gcp": {"project": "test-proj"}}
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+
+    import agent_runner.config as config_mod
+    original = config_mod._apply_firestore_config
+
+    def patched_apply(data):
+        mock_module = MagicMock()
+        mock_module.Client.side_effect = ConnectionError("Firestore unavailable")
+        import sys
+        sys.modules["google.cloud.firestore"] = mock_module
+        try:
+            return original(data)
+        finally:
+            del sys.modules["google.cloud.firestore"]
+
+    with patch.object(config_mod, "_apply_firestore_config", patched_apply):
+        config = load_config(path=cfg_file)
+
+    # Should succeed with defaults despite Firestore failure
+    assert config.agent.name == "test-agent"
+    captured = capsys.readouterr()
+    assert "non-fatal" in captured.err

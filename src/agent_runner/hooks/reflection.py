@@ -6,10 +6,6 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from agent_runner.config import HooksConfig
 
 REFLECTION_PROMPT = (
     "Before ending, reflect on this session. Summarize: "

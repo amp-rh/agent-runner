@@ -1,7 +1,6 @@
 """Tests for hook registration and audit hook."""
 
 import json
-import sys
 
 import pytest
 

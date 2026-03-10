@@ -1,4 +1,5 @@
 sa-key.json
+agent-config.yaml
 claude.json
 *.pem
 *.key
