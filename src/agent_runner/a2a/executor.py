@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -30,12 +31,18 @@ class ClaudeAgentExecutor(AgentExecutor):
         if not prompt:
             prompt = "No prompt provided."
 
+        task_id = getattr(context, "task_id", None) or str(uuid.uuid4())
+        context_id = getattr(context, "context_id", None) or str(uuid.uuid4())
+
         try:
             result = await self._runner.run(prompt)
             await event_queue.enqueue_event(
                 TaskArtifactUpdateEvent(
+                    taskId=task_id,
+                    contextId=context_id,
                     append=False,
                     artifact={
+                        "artifactId": str(uuid.uuid4()),
                         "parts": [{"type": "text", "text": result}],
                     },
                 )
@@ -43,8 +50,11 @@ class ClaudeAgentExecutor(AgentExecutor):
         except Exception as exc:
             await event_queue.enqueue_event(
                 TaskArtifactUpdateEvent(
+                    taskId=task_id,
+                    contextId=context_id,
                     append=False,
                     artifact={
+                        "artifactId": str(uuid.uuid4()),
                         "parts": [{"type": "text", "text": f"Error: {exc}"}],
                     },
                 )

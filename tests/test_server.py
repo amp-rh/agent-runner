@@ -1,8 +1,9 @@
-"""Tests for OAuth endpoints and auth middleware."""
+"""Tests for OAuth endpoints, auth middleware, and PublicURLMiddleware."""
 
 import base64
 import hashlib
 import secrets
+from unittest.mock import patch
 
 import jwt
 import pytest
@@ -192,3 +193,87 @@ def test_auth_required_for_non_open_paths(oauth_config):
 
     resp = client.get("/mcp")
     assert resp.status_code == 401
+
+
+# ---- PublicURLMiddleware tests ----
+
+
+class TestPublicURLMiddleware:
+    def test_middleware_resolves_public_url_from_host(self):
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        from agent_runner.config import AppConfig
+        from agent_runner.server import PublicURLMiddleware
+
+        config = AppConfig()
+        assert config.server.public_url == "http://localhost:8080"
+
+        async def ok(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/test", ok)])
+        app.add_middleware(PublicURLMiddleware, config=config)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        # Simulate Cloud Run request with real host
+        resp = client.get(
+            "/test",
+            headers={
+                "host": "my-service-abc123.run.app",
+                "x-forwarded-proto": "https",
+            },
+        )
+        assert resp.status_code == 200
+        assert config.server.public_url == "https://my-service-abc123.run.app"
+
+    def test_middleware_skips_localhost(self):
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        from agent_runner.config import AppConfig
+        from agent_runner.server import PublicURLMiddleware
+
+        config = AppConfig()
+
+        async def ok(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/test", ok)])
+        app.add_middleware(PublicURLMiddleware, config=config)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.get("/test", headers={"host": "localhost:8080"})
+        assert resp.status_code == 200
+        assert config.server.public_url == "http://localhost:8080"
+
+    def test_middleware_resolves_only_once(self):
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        from agent_runner.config import AppConfig
+        from agent_runner.server import PublicURLMiddleware
+
+        config = AppConfig()
+
+        async def ok(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/test", ok)])
+        app.add_middleware(PublicURLMiddleware, config=config)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        # First request resolves
+        with patch("agent_runner.server._register_agent"):
+            client.get(
+                "/test",
+                headers={"host": "first.run.app", "x-forwarded-proto": "https"},
+            )
+            assert config.server.public_url == "https://first.run.app"
+
+            # Second request does not change it
+            client.get(
+                "/test",
+                headers={"host": "second.run.app", "x-forwarded-proto": "https"},
+            )
+            assert config.server.public_url == "https://first.run.app"

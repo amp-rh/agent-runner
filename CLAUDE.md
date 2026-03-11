@@ -1,6 +1,6 @@
-# Agent Runner v2
+# Agent Runner
 
-A reusable container image for deploying Claude agents as MCP servers on Google Cloud Run. Version 2.0.0.
+A reusable container image for deploying Claude agents as MCP servers on Google Cloud Run. Version 1.0.0.
 
 ## Architecture
 
@@ -32,7 +32,7 @@ Container Startup (python -m agent_runner)
 ```
 agent-runner/
 ├── src/agent_runner/
-│   ├── __init__.py               # Version: 2.0.0
+│   ├── __init__.py               # Version: 1.0.0
 │   ├── __main__.py               # Entrypoint: python -m agent_runner
 │   ├── config.py                 # YAML + Firestore + env overrides + pydantic validation
 │   ├── server.py                 # Starlette app composition (FastMCP + A2A + OAuth)

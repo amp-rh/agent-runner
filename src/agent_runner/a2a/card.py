@@ -29,7 +29,7 @@ def build_agent_card(config: AppConfig) -> AgentCard:
         name=config.agent.name,
         description=config.agent.description,
         url=config.server.public_url,
-        version="2.0.0",
+        version="1.0.0",
         skills=skills,
         defaultInputModes=["text/plain"],
         defaultOutputModes=["text/plain"],

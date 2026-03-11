@@ -1,4 +1,4 @@
-# Agent Runner v2
+# Agent Runner
 
 Deploy Claude agents as MCP servers on Google Cloud Run with A2A communication, session reflection hooks, and auto-registration with Claude Code.
 
