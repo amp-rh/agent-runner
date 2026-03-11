@@ -23,7 +23,7 @@ def test_build_agent_card_defaults():
     card = build_agent_card(config)
 
     assert card.name == "gcloud-operator"
-    assert card.version == "2.0.0"
+    assert card.version == "1.0.0"
     assert card.url == "http://localhost:8080"
     assert len(card.skills) == 1
     assert card.skills[0].id == "run_task"
