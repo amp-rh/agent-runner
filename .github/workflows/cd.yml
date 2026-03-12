@@ -11,9 +11,9 @@ concurrency:
 env:
   GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
   GCP_PROJECT: ${{ vars.GCP_PROJECT || 'claude-connectors' }}
-  SERVICE_NAME: ${{ vars.CLOUD_RUN_SERVICE || 'agent-runner-mcp' }}
+  SERVICE_NAME: ${{ vars.CLOUD_RUN_SERVICE || 'gcp-claude-bridge-mcp' }}
   AR_REPO: ${{ vars.AR_REPO || 'agent-runner' }}
-  IMAGE_NAME: agent-runner
+  IMAGE_NAME: gcp-claude-bridge-mcp
   COMMON_SECRETS: "ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OAUTH_CLIENT_CREDENTIALS=oauth-client-credentials:latest,OAUTH_SIGNING_KEY=oauth-signing-key:latest"
 
 jobs:
@@ -80,26 +80,6 @@ jobs:
           curl -sf \
             "${{ steps.deploy.outputs.service_url }}/.well-known/agent.json" \
             --max-time 30 --retry 5 --retry-delay 5 --retry-all-errors
-
-      - name: Deploy gcloud-dev-mcp
-        run: |
-          GCLOUD_SERVICE="gcloud-dev-mcp"
-          EXISTING_URL=$(gcloud run services describe "$GCLOUD_SERVICE" \
-            --format='value(status.url)' 2>/dev/null || true)
-          ENV_VARS="GCP_PROJECT=$GCP_PROJECT,AGENT_CONFIG_AGENT__NAME=gcloud-operator"
-          [ -n "$EXISTING_URL" ] && ENV_VARS="$ENV_VARS,PUBLIC_URL=$EXISTING_URL"
-          GCLOUD_URL=$(gcloud run deploy "$GCLOUD_SERVICE" \
-            --image="$IMAGE_REF" \
-            --service-account="${{ secrets.GCP_SERVICE_ACCOUNT }}" \
-            --update-env-vars="$ENV_VARS" \
-            --update-secrets="$COMMON_SECRETS" \
-            --timeout=600 \
-            --concurrency=10 \
-            --max-instances=1 \
-            --allow-unauthenticated \
-            --format='value(status.url)')
-          gcloud run services update "$GCLOUD_SERVICE" \
-            --update-env-vars="PUBLIC_URL=$GCLOUD_URL"
 
       - name: Clean up old images
         run: |

@@ -12,7 +12,7 @@ from agent_runner.config import load_config
 def test_default_config():
     """Loading with no file returns valid defaults."""
     config = load_config(path="/nonexistent/path.yaml")
-    assert config.agent.name == "gcloud-operator"
+    assert config.agent.name == "gcp-claude-bridge"
     assert config.agent.model == "claude-sonnet-4-6"
     assert config.agent.timeout == 600
     assert config.server.port == 8080
@@ -112,7 +112,7 @@ def test_empty_yaml(tmp_path):
     cfg_file.write_text("")
 
     config = load_config(path=cfg_file)
-    assert config.agent.name == "gcloud-operator"
+    assert config.agent.name == "gcp-claude-bridge"
 
 
 def test_firestore_config_merged(monkeypatch, tmp_path):
@@ -265,7 +265,7 @@ def test_firestore_invalid_fields_skipped(tmp_path, capsys):
 
     # All-or-nothing: bad timeout rejects entire Firestore overlay
     assert config.agent.timeout == 600  # default preserved
-    assert config.agent.description == "Claude agent"  # default, not "Valid description"
+    assert "GCP-integrated" in config.agent.description  # default, not "Valid description"
     captured = capsys.readouterr()
     assert "Invalid Firestore config fields" in captured.err
 

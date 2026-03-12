@@ -2,8 +2,8 @@
 # See CLAUDE.md for full documentation.
 
 agent:
-  name: "my-agent"
-  description: "What this agent does"
+  name: "gcp-claude-bridge"
+  description: "GCP-integrated Claude agent — bridges Claude and Google Cloud as an authenticated MCP service"
   model: "claude-sonnet-4-6"        # claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5
   # system_prompt: "Custom system prompt (optional, loaded from .claude/agents/ if omitted)"
   max_turns: 50

@@ -12,8 +12,8 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class AgentConfig(BaseModel):
-    name: str = "gcloud-operator"
-    description: str = "Claude agent"
+    name: str = "gcp-claude-bridge"
+    description: str = "GCP-integrated Claude agent — bridges Claude and Google Cloud as an authenticated MCP service"
     model: str = "claude-sonnet-4-6"
     system_prompt: str = ""
     max_turns: int = 50

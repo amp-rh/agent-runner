@@ -22,7 +22,7 @@ def test_build_agent_card_defaults():
     config = load_config(path="/nonexistent.yaml")
     card = build_agent_card(config)
 
-    assert card.name == "gcloud-operator"
+    assert card.name == "gcp-claude-bridge"
     assert card.version == "1.0.0"
     assert card.url == "http://localhost:8080"
     assert len(card.skills) == 1

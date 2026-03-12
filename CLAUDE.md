@@ -1,6 +1,6 @@
-# Agent Runner
+# GCP Claude Bridge MCP
 
-A reusable container image for deploying Claude agents as MCP servers on Google Cloud Run. Version 1.0.0.
+A single Cloud Run service that bridges Claude and Google Cloud Platform as an authenticated MCP connector. Version 1.0.0.
 
 ## Architecture
 
@@ -76,8 +76,8 @@ agent-runner/
 ├── Dockerfile                    # Symlink → Containerfile
 ├── Makefile                      # Build, deploy, infra setup targets
 ├── cloudbuild.yaml               # Cloud Build config
+├── agent-config.yaml             # Production config (gcp-claude-bridge)
 ├── agent-config.example.yaml     # Full config example with documentation
-├── gcloud-dev-config.yaml        # Example gcloud-operator agent config
 ├── .env.example                  # Environment variable template
 ├── uv.lock                       # Locked dependencies (uv package manager)
 ├── .gitignore
@@ -280,7 +280,7 @@ Logs every tool invocation as JSON to stderr: `{event, tool, tool_use_id, timest
 ### CD (`.github/workflows/cd.yml`)
 - **Trigger**: Push to main only
 - **Auth**: Workload Identity Federation (no service account keys)
-- **Steps**: checkout → GCP auth → build & push image → deploy `agent-runner-mcp` to Cloud Run → set PUBLIC_URL → health check → deploy `gcloud-dev-mcp` → cleanup old images
+- **Steps**: checkout → GCP auth → build & push image → deploy `gcp-claude-bridge-mcp` to Cloud Run → set PUBLIC_URL → health check → cleanup old images
 
 ## Makefile Targets
 
@@ -326,7 +326,7 @@ Logs every tool invocation as JSON to stderr: `{event, tool, tool_use_id, timest
 | `PROJECT` | `claude-connectors` | GCP project ID |
 | `REGION` | `us-central1` | GCP region |
 | `REPO` | `agent-runner` | Artifact Registry repo |
-| `IMAGE` | `agent-runner` | Container image name |
+| `IMAGE` | `gcp-claude-bridge-mcp` | Container image name |
 | `SERVICE` | `$AGENT_ID` or `$IMAGE` | Cloud Run service name |
 | `SA_NAME` | `claude-connector` | Service account name |
 | `AGENT_ID` | (empty) | Agent name override |
