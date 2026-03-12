@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 
 
 def main():
@@ -11,11 +12,26 @@ def main():
     parser.add_argument("--config", help="Path to config YAML file")
     parser.add_argument("--task", help="Run a single task and exit (CLI mode)")
     parser.add_argument("--worker", action="store_true", help="Start Pub/Sub worker mode")
+    parser.add_argument(
+        "--validate-config",
+        action="store_true",
+        help="Validate config and print resolved values, then exit",
+    )
     args = parser.parse_args()
 
     from agent_runner.config import load_config
 
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except Exception as exc:
+        if args.validate_config:
+            print(f"Config validation failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+        raise
+
+    if args.validate_config:
+        _validate_config(config)
+        return
 
     if args.task:
         _run_cli(config, args.task)
@@ -23,6 +39,13 @@ def main():
         _run_worker(config)
     else:
         _run_server(config)
+
+
+def _validate_config(config):
+    """Print resolved config as YAML and exit."""
+    import yaml
+
+    print(yaml.dump(config.model_dump(), default_flow_style=False, sort_keys=False))
 
 
 def _run_server(config):

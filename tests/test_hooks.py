@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
@@ -71,12 +72,12 @@ class TestReflectionStopHook:
 
     @pytest.fixture(autouse=True)
     def reset_state(self):
-        """Reset module-level state before each test."""
-        from agent_runner.hooks import reflection
+        """Reset ContextVar state before each test."""
+        from agent_runner.hooks.reflection import _session_ctx
 
-        reflection._session_state.clear()
+        token = _session_ctx.set({})
         yield
-        reflection._session_state.clear()
+        _session_ctx.reset(token)
 
     async def test_phase1_returns_system_message(self):
         from agent_runner.hooks.reflection import reflection_stop_hook
@@ -88,19 +89,21 @@ class TestReflectionStopHook:
         assert "reflect" in result["systemMessage"].lower()
 
     async def test_phase1_sets_session_id(self):
-        from agent_runner.hooks.reflection import _session_state, reflection_stop_hook
+        from agent_runner.hooks.reflection import _session_ctx, reflection_stop_hook
 
         await reflection_stop_hook({}, "tool-1", None)
 
-        assert "session_id" in _session_state
-        assert "start_time" in _session_state
+        state = _session_ctx.get()
+        assert "session_id" in state
+        assert "start_time" in state
 
     async def test_phase2_captures_reflection_and_persists(self):
-        from agent_runner.hooks.reflection import _session_state, reflection_stop_hook
+        from agent_runner.hooks.reflection import _session_ctx, reflection_stop_hook
 
         # Phase 1
         await reflection_stop_hook({}, "tool-1", None)
-        session_id = _session_state["session_id"]
+        session_id = _session_ctx.get()["session_id"]
+        start_time = _session_ctx.get()["start_time"]
 
         # Phase 2 — provide reflection content
         input_data = {
@@ -113,22 +116,25 @@ class TestReflectionStopHook:
             result = await reflection_stop_hook(input_data, "tool-2", None)
 
         assert result is None
-        mock_persist.assert_called_once_with(session_id, "I learned about testing.")
+        mock_persist.assert_called_once_with(
+            session_id, "I learned about testing.", start_time,
+        )
 
     async def test_phase2_resets_state(self):
-        from agent_runner.hooks.reflection import _session_state, reflection_stop_hook
+        from agent_runner.hooks.reflection import _session_ctx, reflection_stop_hook
 
         await reflection_stop_hook({}, "tool-1", None)
 
         with patch("agent_runner.hooks.reflection._persist_reflection"):
             await reflection_stop_hook({"content": []}, "tool-2", None)
 
-        assert len(_session_state) == 0
+        assert _session_ctx.get() == {}
 
     async def test_phase2_handles_empty_content(self):
-        from agent_runner.hooks.reflection import reflection_stop_hook
+        from agent_runner.hooks.reflection import _session_ctx, reflection_stop_hook
 
         await reflection_stop_hook({}, "tool-1", None)
+        start_time = _session_ctx.get()["start_time"]
 
         with patch("agent_runner.hooks.reflection._persist_reflection") as mock_persist:
             await reflection_stop_hook({}, "tool-2", None)
@@ -136,13 +142,43 @@ class TestReflectionStopHook:
         # session_id is a UUID string, just verify it was called with empty learnings
         assert mock_persist.call_count == 1
         assert mock_persist.call_args[0][1] == ""
+        assert mock_persist.call_args[0][2] == start_time
+
+    async def test_concurrent_sessions_isolated(self):
+        """Two concurrent tasks get independent session state."""
+        from agent_runner.hooks.reflection import reflection_stop_hook
+
+        session_ids = []
+
+        async def run_session(label: str):
+            with patch("agent_runner.hooks.reflection._persist_reflection") as mock_persist:
+                # Phase 1
+                result = await reflection_stop_hook({}, f"tool-{label}-1", None)
+                assert result is not None
+
+                # Phase 2
+                input_data = {"content": [{"type": "text", "text": f"Learnings from {label}"}]}
+                await reflection_stop_hook(input_data, f"tool-{label}-2", None)
+
+                sid = mock_persist.call_args[0][0]
+                learnings = mock_persist.call_args[0][1]
+                session_ids.append(sid)
+                assert learnings == f"Learnings from {label}"
+
+        # Run two sessions concurrently — each asyncio.Task gets its own ContextVar copy
+        await asyncio.gather(
+            asyncio.create_task(run_session("A")),
+            asyncio.create_task(run_session("B")),
+        )
+
+        # Each session should have a unique session_id
+        assert len(session_ids) == 2
+        assert session_ids[0] != session_ids[1]
 
 
 class TestPersistReflection:
     def test_persist_writes_to_firestore(self):
-        from agent_runner.hooks.reflection import _persist_reflection, _session_state
-
-        _session_state["start_time"] = 1000.0
+        from agent_runner.hooks.reflection import _persist_reflection
 
         mock_db = MagicMock()
         mock_collection = MagicMock()
@@ -153,7 +189,7 @@ class TestPersistReflection:
         with patch("google.cloud.firestore.Client", return_value=mock_db), \
              patch("agent_runner.config.load_config") as mock_cfg:
             mock_cfg.return_value = load_config(path="/nonexistent.yaml")
-            _persist_reflection("session-123", "learnings text")
+            _persist_reflection("session-123", "learnings text", 1000.0)
 
         mock_collection.document.assert_called_once_with("session-123")
         doc_data = mock_doc.set.call_args[0][0]
@@ -170,7 +206,7 @@ class TestPersistReflection:
         ), patch("agent_runner.config.load_config") as mock_cfg:
             mock_cfg.return_value = load_config(path="/nonexistent.yaml")
             # Should not raise
-            _persist_reflection("s-1", "text")
+            _persist_reflection("s-1", "text", 1000.0)
 
         captured = capsys.readouterr()
         assert "Failed to persist reflection" in captured.err

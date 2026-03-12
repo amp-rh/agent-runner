@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -177,12 +178,20 @@ def _apply_firestore_config(data: dict[str, Any]) -> dict[str, Any]:
         if doc.exists:
             fs_data = doc.to_dict()
             agent = data.setdefault("agent", {})
-            for field in ("system_prompt", "description", "model", "timeout", "max_turns"):
-                if field in fs_data:
-                    agent[field] = fs_data[field]
+            allowed_fields = (
+                "system_prompt", "description", "model", "timeout", "max_turns",
+            )
+            partial = {k: fs_data[k] for k in allowed_fields if k in fs_data}
+            if partial:
+                try:
+                    AgentConfig(**{**agent, **partial})
+                    agent.update(partial)
+                except Exception as val_exc:
+                    print(
+                        f"Invalid Firestore config fields (skipped): {val_exc}",
+                        file=sys.stderr,
+                    )
     except Exception as exc:
-        import sys
-
         print(f"Firestore config lookup failed (non-fatal): {exc}", file=sys.stderr)
 
     return data

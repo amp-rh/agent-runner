@@ -1,5 +1,9 @@
 """Tests for config loading, env overrides, and validation."""
 
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
 import yaml
 
 from agent_runner.config import load_config
@@ -224,3 +228,77 @@ def test_firestore_config_failure_nonfatal(tmp_path, capsys):
     assert config.agent.name == "test-agent"
     captured = capsys.readouterr()
     assert "non-fatal" in captured.err
+
+
+def test_firestore_invalid_fields_skipped(tmp_path, capsys):
+    """Invalid Firestore config fields are skipped with a warning."""
+    cfg = {"agent": {"name": "test-agent"}, "gcp": {"project": "test-proj"}}
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+
+    mock_doc = MagicMock()
+    mock_doc.exists = True
+    mock_doc.to_dict.return_value = {
+        "timeout": "not_a_number",
+        "description": "Valid description",
+    }
+
+    mock_collection = MagicMock()
+    mock_collection.document.return_value.get.return_value = mock_doc
+    mock_client = MagicMock()
+    mock_client.return_value.collection.return_value = mock_collection
+
+    import agent_runner.config as config_mod
+    original = config_mod._apply_firestore_config
+
+    def patched_apply(data):
+        mock_module = MagicMock()
+        mock_module.Client = mock_client
+        sys.modules["google.cloud.firestore"] = mock_module
+        try:
+            return original(data)
+        finally:
+            del sys.modules["google.cloud.firestore"]
+
+    with patch.object(config_mod, "_apply_firestore_config", patched_apply):
+        config = load_config(path=cfg_file)
+
+    # All-or-nothing: bad timeout rejects entire Firestore overlay
+    assert config.agent.timeout == 600  # default preserved
+    assert config.agent.description == "Claude agent"  # default, not "Valid description"
+    captured = capsys.readouterr()
+    assert "Invalid Firestore config fields" in captured.err
+
+
+def test_validate_config_prints_yaml(tmp_path, capsys):
+    """--validate-config prints resolved config as YAML and exits."""
+    cfg = {"agent": {"name": "validate-test", "timeout": 300}}
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.dump(cfg))
+
+    test_args = ["agent_runner", "--validate-config", "--config", str(cfg_file)]
+    with patch.object(sys, "argv", test_args):
+        from agent_runner.__main__ import main
+
+        main()
+
+    captured = capsys.readouterr()
+    resolved = yaml.safe_load(captured.out)
+    assert resolved["agent"]["name"] == "validate-test"
+    assert resolved["agent"]["timeout"] == 300
+    assert resolved["server"]["port"] == 8080  # default preserved
+
+
+def test_validate_config_invalid_exits_nonzero(tmp_path):
+    """--validate-config exits with code 1 on invalid config."""
+    # Write YAML with a value that will fail Pydantic validation
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("agent:\n  timeout: not_a_number\n")
+
+    test_args = ["agent_runner", "--validate-config", "--config", str(cfg_file)]
+    with patch.object(sys, "argv", test_args):
+        from agent_runner.__main__ import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1

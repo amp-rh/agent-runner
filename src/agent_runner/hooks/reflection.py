@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import time
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 REFLECTION_PROMPT = (
@@ -13,8 +14,8 @@ REFLECTION_PROMPT = (
     "(3) tools used and their effectiveness. Be concise."
 )
 
-# Track state across the two-phase stop hook chain
-_session_state: dict = {}
+# Per-task session state via ContextVar (isolated across concurrent asyncio tasks)
+_session_ctx: ContextVar[dict] = ContextVar("_session_ctx", default={})
 
 
 async def reflection_stop_hook(input_data, tool_use_id, context):
@@ -23,12 +24,15 @@ async def reflection_stop_hook(input_data, tool_use_id, context):
     First call: inject a system message asking the agent to reflect.
     Second call: capture the reflection output and persist to Firestore.
     """
-    session_id = _session_state.get("session_id")
+    state = _session_ctx.get()
+    session_id = state.get("session_id")
 
     if session_id is None:
         # Phase 1: first stop event. Ask for reflection.
-        _session_state["session_id"] = str(uuid.uuid4())
-        _session_state["start_time"] = time.time()
+        _session_ctx.set({
+            "session_id": str(uuid.uuid4()),
+            "start_time": time.time(),
+        })
         return {
             "systemMessage": REFLECTION_PROMPT,
         }
@@ -43,14 +47,14 @@ async def reflection_stop_hook(input_data, tool_use_id, context):
                 if isinstance(block, dict) and block.get("type") == "text":
                     reflection_text += block.get("text", "")
 
-    _persist_reflection(session_id, reflection_text)
+    _persist_reflection(session_id, reflection_text, state.get("start_time", time.time()))
 
     # Reset state for next session
-    _session_state.clear()
+    _session_ctx.set({})
     return None
 
 
-def _persist_reflection(session_id: str, learnings: str):
+def _persist_reflection(session_id: str, learnings: str, start_time: float):
     """Write session learnings to Firestore (best-effort)."""
     try:
         from google.cloud.firestore import Client
@@ -66,7 +70,7 @@ def _persist_reflection(session_id: str, learnings: str):
             "agent_name": config.agent.name,
             "timestamp": datetime.now(timezone.utc),
             "learnings": learnings,
-            "duration_seconds": time.time() - _session_state.get("start_time", time.time()),
+            "duration_seconds": time.time() - start_time,
             "model": config.agent.model,
         }
 
