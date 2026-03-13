@@ -17,7 +17,11 @@ def create_mcp_server(config: AppConfig, agent_runner: AgentRunner) -> FastMCP:
 
     tools.configure(agent_runner, config)
 
-    mcp = FastMCP(f"{config.agent.name}-mcp")
+    mcp = FastMCP(
+        f"{config.agent.name}-mcp",
+        stateless_http=True,
+        json_response=True,
+    )
 
     @mcp.tool()
     async def run_task(prompt: str) -> str:

@@ -31,7 +31,7 @@ class TestFetchAgentCard:
 
         assert result == card_data
         mock_client.get.assert_awaited_once_with(
-            "https://example.com/.well-known/agent.json"
+            "https://example.com/.well-known/agent-card.json"
         )
 
     async def test_fetch_agent_card_strips_trailing_slash(self):
@@ -47,7 +47,7 @@ class TestFetchAgentCard:
             await fetch_agent_card("https://example.com/")
 
         mock_client.get.assert_awaited_once_with(
-            "https://example.com/.well-known/agent.json"
+            "https://example.com/.well-known/agent-card.json"
         )
 
     async def test_fetch_agent_card_failure(self):

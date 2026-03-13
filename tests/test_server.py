@@ -155,8 +155,8 @@ def test_protected_resource_endpoint(oauth_client):
 
 
 def test_agent_card_in_open_paths():
-    """/.well-known/agent.json must be in OPEN_PATHS to avoid 401 (issue #17)."""
-    assert "/.well-known/agent.json" in OPEN_PATHS
+    """/.well-known/agent-card.json must be in OPEN_PATHS to avoid 401 (issue #17)."""
+    assert "/.well-known/agent-card.json" in OPEN_PATHS
 
 
 def test_open_paths_bypass_auth(oauth_config):
