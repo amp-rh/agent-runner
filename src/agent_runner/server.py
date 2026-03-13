@@ -59,7 +59,7 @@ def create_app(config: AppConfig) -> Starlette:
 
     # Create MCP server
     mcp = create_mcp_server(config, agent_runner)
-    mcp_app = mcp.http_app()
+    mcp_app = mcp.http_app(stateless_http=True, json_response=True)
 
     # Build routes
     routes = []
