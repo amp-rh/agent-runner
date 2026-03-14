@@ -159,6 +159,11 @@ def test_agent_card_in_open_paths():
     assert "/.well-known/agent-card.json" in OPEN_PATHS
 
 
+def test_agent_json_in_open_paths():
+    """/.well-known/agent.json must be in OPEN_PATHS to avoid 401 (issue #35)."""
+    assert "/.well-known/agent.json" in OPEN_PATHS
+
+
 def test_open_paths_bypass_auth(oauth_config):
     """All OPEN_PATHS return 200 without auth when using the middleware."""
     from starlette.requests import Request
@@ -338,6 +343,42 @@ class TestPublicURLMiddleware:
                 headers={"host": "second.run.app", "x-forwarded-proto": "https"},
             )
             assert config.server.public_url == "https://first.run.app"
+
+
+# ---- Dynamic agent card route tests ----
+
+
+def test_dynamic_card_route_reflects_resolved_url():
+    """/.well-known/agent.json returns the current public_url, not the startup default (#35)."""
+    from starlette.testclient import TestClient
+
+    from agent_runner.config import AppConfig
+    from agent_runner.server import PublicURLMiddleware, _make_dynamic_card_route
+
+    config = AppConfig()
+    assert config.server.public_url == "http://localhost:8080"
+
+    route = _make_dynamic_card_route(config)
+    app = Starlette(routes=[route])
+    app.add_middleware(PublicURLMiddleware, config=config)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Before URL resolution: card should have the localhost URL
+    resp = client.get("/.well-known/agent.json", headers={"host": "localhost:8080"})
+    assert resp.status_code == 200
+    assert resp.json()["url"] == "http://localhost:8080"
+
+    # Simulate Cloud Run: first real-host request triggers PublicURLMiddleware
+    with patch("agent_runner.server._register_agent"):
+        client.get(
+            "/.well-known/agent.json",
+            headers={"host": "my-service-abc123.run.app", "x-forwarded-proto": "https"},
+        )
+
+    # After resolution: card must reflect the new URL
+    resp = client.get("/.well-known/agent.json", headers={"host": "my-service-abc123.run.app"})
+    assert resp.status_code == 200
+    assert resp.json()["url"] == "https://my-service-abc123.run.app"
 
 
 # ---- _heartbeat_loop tests ----

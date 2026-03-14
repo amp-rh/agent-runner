@@ -18,6 +18,7 @@ OPEN_PATHS = frozenset({
     "/.well-known/oauth-protected-resource",
     "/.well-known/jwks.json",
     "/.well-known/agent-card.json",
+    "/.well-known/agent.json",
     "/authorize",
     "/token",
 })
