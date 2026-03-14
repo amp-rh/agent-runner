@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
@@ -104,6 +105,7 @@ def create_app(config: AppConfig) -> Starlette:
             log.info("Server ready — accepting requests")
             yield
             log.info("Server shutting down")
+            await _deregister_agent(config)
 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.add_middleware(BearerAuthMiddleware, oauth_config=oauth_config)
@@ -134,6 +136,17 @@ def _build_a2a_app(config, agent_runner):
     )
 
     return A2AStarletteApplication(agent_card=card, http_handler=handler), card
+
+
+async def _deregister_agent(config) -> None:
+    """Mark agent offline in Firestore on graceful shutdown (non-fatal)."""
+    try:
+        from agent_runner.registry.firestore import deregister
+
+        await asyncio.to_thread(deregister, config.agent.name, config.gcp.project)
+        log.info("Deregistered agent %r from Firestore", config.agent.name)
+    except Exception as exc:
+        log.warning("Agent deregistration failed (non-fatal): %s", exc)
 
 
 def _register_agent(config):
