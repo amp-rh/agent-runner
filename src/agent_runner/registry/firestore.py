@@ -57,6 +57,18 @@ def discover(capability: str | None = None, project: str = "claude-connectors") 
     return results
 
 
+def deregister(agent_name: str, project: str) -> None:
+    """Mark agent as offline in the Firestore registry (non-fatal on failure)."""
+    try:
+        db = _firestore_client(project)
+        db.collection(REGISTRY_COLLECTION).document(agent_name).set(
+            {"status": "offline"}, merge=True
+        )
+        print(f"Agent '{agent_name}' marked offline in registry", file=sys.stderr)
+    except Exception as exc:
+        print(f"Failed to deregister agent: {exc}", file=sys.stderr)
+
+
 def list_peers(project: str = "claude-connectors") -> list[dict]:
     """Return all registered agents."""
     return discover(project=project)
