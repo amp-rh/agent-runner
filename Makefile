@@ -122,13 +122,7 @@ register-agent:
 	  exit 1; \
 	fi
 	uv run --with google-cloud-firestore \
-	  python3 -c " \
-	import sys; \
-	from pathlib import Path; \
-	from agent_runner.config import load_config; \
-	# Registration logic placeholder \
-	print('Agent registered from $(AGENT_FILE)') \
-	"
+	  python3 scripts/register_agent.py "$(AGENT_FILE)" --project "$(PROJECT)"
 
 # --- Connection targets ---
 
