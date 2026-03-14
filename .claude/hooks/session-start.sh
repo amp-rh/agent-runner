@@ -61,6 +61,23 @@ if [ -z "${GH_TOKEN:-}" ]; then
   fi
 fi
 
+# Install gh CLI if not present
+if ! command -v gh &>/dev/null; then
+  GH_DIR="${HOME}/.local/gh"
+  if [ ! -f "${GH_DIR}/bin/gh" ]; then
+    echo "Installing gh CLI..."
+    GH_VERSION=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest \
+      | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/')
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+      | tar -xz -C /tmp
+    mkdir -p "${GH_DIR}/bin"
+    mv "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" "${GH_DIR}/bin/gh"
+    rm -rf "/tmp/gh_${GH_VERSION}_linux_amd64"
+    echo "gh CLI ${GH_VERSION} installed"
+  fi
+  export PATH="${GH_DIR}/bin:${PATH}"
+fi
+
 # Authenticate gh CLI using GH_TOKEN if available and not already logged in
 if [ -n "${GH_TOKEN:-}" ]; then
   if ! gh auth status &>/dev/null; then
