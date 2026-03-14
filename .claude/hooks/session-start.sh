@@ -14,6 +14,22 @@ else
   echo "uv not found, skipping Python dependency install"
 fi
 
+# Populate GH_TOKEN from GCP Secret Manager if not already set
+if [ -z "${GH_TOKEN:-}" ]; then
+  if command -v gcloud &>/dev/null; then
+    GCP_PROJECT="${GCP_PROJECT:-claude-connectors}"
+    echo "Fetching GitHub token from Secret Manager (project: ${GCP_PROJECT})..."
+    if GH_TOKEN=$(gcloud secrets versions access latest --secret=github-token --project="${GCP_PROJECT}" 2>/dev/null); then
+      export GH_TOKEN
+      echo "GH_TOKEN populated from Secret Manager"
+    else
+      echo "WARNING: Could not fetch github-token from Secret Manager (project: ${GCP_PROJECT})" >&2
+    fi
+  else
+    echo "WARNING: gcloud not found; cannot fetch GH_TOKEN from Secret Manager" >&2
+  fi
+fi
+
 # Authenticate gh CLI using GH_TOKEN if available and not already logged in
 if [ -n "${GH_TOKEN:-}" ]; then
   if ! gh auth status &>/dev/null; then
