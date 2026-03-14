@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.routing import Mount
+from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
 
 if TYPE_CHECKING:
     from agent_runner.config import AppConfig
@@ -88,6 +89,10 @@ def create_app(config: AppConfig) -> Starlette:
         try:
             a2a_builder, agent_card = _build_a2a_app(config, agent_runner)
             if a2a_builder:
+                # Dynamic agent card route: reads config.server.public_url at request time
+                # so that PublicURLMiddleware's URL resolution is always reflected.
+                # Must be added before A2A routes to take precedence.
+                routes.append(_make_dynamic_card_route(config))
                 routes.extend(a2a_builder.routes())
                 log.info("A2A protocol enabled at /.well-known/agent.json")
         except Exception as exc:
@@ -118,6 +123,21 @@ def create_app(config: AppConfig) -> Starlette:
     app.add_middleware(PublicURLMiddleware, config=config, agent_card=agent_card)
 
     return app
+
+
+def _make_dynamic_card_route(config):
+    """Return a Route for /.well-known/agent.json that builds the card on every request.
+
+    This ensures the URL in the agent card always reflects config.server.public_url,
+    which PublicURLMiddleware updates after auto-detecting the Cloud Run service URL.
+    """
+    from agent_runner.a2a.card import build_agent_card
+
+    async def agent_card_handler(request: Request) -> JSONResponse:
+        card = build_agent_card(config)
+        return JSONResponse(card.model_dump(mode="json", exclude_none=True))
+
+    return Route("/.well-known/agent.json", agent_card_handler)
 
 
 def _build_a2a_app(config, agent_runner):
