@@ -227,6 +227,38 @@ class TestPublicURLMiddleware:
         assert resp.status_code == 200
         assert config.server.public_url == "https://my-service-abc123.run.app"
 
+    def test_middleware_updates_agent_card_url(self):
+        """PublicURLMiddleware updates the A2A agent card URL on resolution (#35)."""
+        from unittest.mock import MagicMock
+
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        from agent_runner.config import AppConfig
+        from agent_runner.server import PublicURLMiddleware
+
+        config = AppConfig()
+        agent_card = MagicMock()
+        agent_card.url = "http://localhost:8080"
+
+        async def ok(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/test", ok)])
+        app.add_middleware(PublicURLMiddleware, config=config, agent_card=agent_card)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with patch("agent_runner.server._register_agent"):
+            client.get(
+                "/test",
+                headers={
+                    "host": "my-service-abc123.run.app",
+                    "x-forwarded-proto": "https",
+                },
+            )
+
+        assert agent_card.url == "https://my-service-abc123.run.app"
+
     def test_middleware_skips_localhost(self):
         from starlette.responses import PlainTextResponse
         from starlette.routing import Route

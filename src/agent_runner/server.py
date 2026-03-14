@@ -21,12 +21,13 @@ class PublicURLMiddleware(BaseHTTPMiddleware):
 
     On Cloud Run, the service URL is not known until the first request arrives.
     This middleware captures the Host header and updates config.server.public_url,
-    then re-registers the agent with the correct URL.
+    then re-registers the agent with the correct URL and updates the A2A agent card.
     """
 
-    def __init__(self, app, config: AppConfig):
+    def __init__(self, app, config: AppConfig, agent_card=None):
         super().__init__(app)
         self._config = config
+        self._agent_card = agent_card
         self._resolved = False
 
     async def dispatch(self, request: Request, call_next):
@@ -36,6 +37,8 @@ class PublicURLMiddleware(BaseHTTPMiddleware):
                 scheme = request.headers.get("x-forwarded-proto", "https")
                 self._config.server.public_url = f"{scheme}://{host}"
                 self._resolved = True
+                if self._agent_card is not None:
+                    self._agent_card.url = self._config.server.public_url
                 _register_agent(self._config)
         return await call_next(request)
 
@@ -63,6 +66,7 @@ def create_app(config: AppConfig) -> Starlette:
 
     # Build routes
     routes = []
+    agent_card = None
 
     # OAuth routes (if configured)
     if oauth_config:
@@ -72,7 +76,7 @@ def create_app(config: AppConfig) -> Starlette:
     # A2A routes (if enabled) — routes already include full paths (/.well-known/...)
     if config.a2a.enabled:
         try:
-            a2a_builder = _build_a2a_app(config, agent_runner)
+            a2a_builder, agent_card = _build_a2a_app(config, agent_runner)
             if a2a_builder:
                 routes.extend(a2a_builder.routes())
         except Exception as exc:
@@ -89,13 +93,17 @@ def create_app(config: AppConfig) -> Starlette:
 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.add_middleware(BearerAuthMiddleware, oauth_config=oauth_config)
-    app.add_middleware(PublicURLMiddleware, config=config)
+    app.add_middleware(PublicURLMiddleware, config=config, agent_card=agent_card)
 
     return app
 
 
 def _build_a2a_app(config, agent_runner):
-    """Build the A2A application builder (routes include full paths like /.well-known/...)."""
+    """Build the A2A application builder and return (app, agent_card) tuple.
+
+    Routes include full paths like /.well-known/... The card is returned so that
+    PublicURLMiddleware can update its URL after auto-detection.
+    """
     from a2a.server.apps import A2AStarletteApplication
     from a2a.server.request_handlers import DefaultRequestHandler
     from a2a.server.tasks import InMemoryTaskStore
@@ -111,7 +119,7 @@ def _build_a2a_app(config, agent_runner):
         task_store=task_store,
     )
 
-    return A2AStarletteApplication(agent_card=card, http_handler=handler)
+    return A2AStarletteApplication(agent_card=card, http_handler=handler), card
 
 
 def _register_agent(config):
