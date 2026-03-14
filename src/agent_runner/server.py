@@ -33,9 +33,11 @@ class PublicURLMiddleware(BaseHTTPMiddleware):
         self._resolved = False
 
     async def dispatch(self, request: Request, call_next):
-        if not self._resolved and self._config.server.public_url == "http://localhost:8080":
+        if not self._resolved and self._config.server.public_url.startswith(
+            ("http://localhost", "http://127.0.0.1", "http://0.0.0.0")
+        ):
             host = request.headers.get("host", "")
-            if host and not host.startswith("localhost"):
+            if host and not host.startswith(("localhost", "127.0.0.1", "0.0.0.0")):
                 scheme = request.headers.get("x-forwarded-proto", "https")
                 new_url = f"{scheme}://{host}"
                 self._config.server.public_url = new_url
