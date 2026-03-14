@@ -55,7 +55,7 @@ async def call_remote_agent(
         headers["Authorization"] = f"Bearer {token}"
 
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as http:
-        agent_card_url = f"{peer_url.rstrip('/')}/.well-known/agent-card.json"
+        agent_card_url = f"{peer_url.rstrip('/')}/.well-known/agent.json"
         client = await A2AClient.get_client_from_agent_card_url(http, agent_card_url)
 
         # Send task with the prompt

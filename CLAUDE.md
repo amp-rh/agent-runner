@@ -241,7 +241,7 @@ All agents share one RSA key pair (from Secret Manager). Agent A mints a JWT wit
 |-------|------|---------|
 | `/*` | Bearer | FastMCP HTTP streaming (tools) |
 | `/.well-known/agent.json` | None | A2A Agent Card |
-| `POST /agent/tasks` | Bearer | A2A task submission |
+| `POST /` | Bearer | A2A JSON-RPC (`message/send`) |
 | `GET /.well-known/oauth-authorization-server` | None | OAuth metadata |
 | `GET /.well-known/jwks.json` | None | Public JWK |
 | `GET /authorize` | None | OAuth authorization code flow (PKCE) |

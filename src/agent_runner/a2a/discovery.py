@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 async def fetch_agent_card(url: str) -> dict | None:
     """Fetch an A2A Agent Card from a remote agent."""
-    card_url = f"{url.rstrip('/')}/.well-known/agent-card.json"
+    card_url = f"{url.rstrip('/')}/.well-known/agent.json"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(card_url)

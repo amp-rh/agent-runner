@@ -155,8 +155,8 @@ def test_protected_resource_endpoint(oauth_client):
 
 
 def test_agent_card_in_open_paths():
-    """/.well-known/agent-card.json must be in OPEN_PATHS to avoid 401 (issue #17)."""
-    assert "/.well-known/agent-card.json" in OPEN_PATHS
+    """/.well-known/agent.json must be in OPEN_PATHS to avoid 401 (issue #17)."""
+    assert "/.well-known/agent.json" in OPEN_PATHS
 
 
 def test_open_paths_bypass_auth(oauth_config):
@@ -278,6 +278,35 @@ class TestPublicURLMiddleware:
         resp = client.get("/test", headers={"host": "localhost:8080"})
         assert resp.status_code == 200
         assert config.server.public_url == "http://localhost:8080"
+
+    def test_middleware_resolves_non_default_port(self):
+        """PublicURLMiddleware resolves even when port is not 8080 (#48)."""
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        from agent_runner.config import AppConfig
+        from agent_runner.server import PublicURLMiddleware
+
+        config = AppConfig()
+        config.server.public_url = "http://localhost:9090"
+
+        async def ok(request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/test", ok)])
+        app.add_middleware(PublicURLMiddleware, config=config)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with patch("agent_runner.server._register_agent"):
+            resp = client.get(
+                "/test",
+                headers={
+                    "host": "my-service-abc123.run.app",
+                    "x-forwarded-proto": "https",
+                },
+            )
+        assert resp.status_code == 200
+        assert config.server.public_url == "https://my-service-abc123.run.app"
 
     def test_middleware_resolves_only_once(self):
         from starlette.responses import PlainTextResponse

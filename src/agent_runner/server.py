@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
@@ -33,7 +34,9 @@ class PublicURLMiddleware(BaseHTTPMiddleware):
         self._resolved = False
 
     async def dispatch(self, request: Request, call_next):
-        if not self._resolved and self._config.server.public_url == "http://localhost:8080":
+        if not self._resolved and self._config.server.public_url.startswith(
+            ("http://localhost", "http://127.0.0.1", "http://0.0.0.0")
+        ):
             host = request.headers.get("host", "")
             if host and not host.startswith("localhost"):
                 scheme = request.headers.get("x-forwarded-proto", "https")
@@ -43,7 +46,7 @@ class PublicURLMiddleware(BaseHTTPMiddleware):
                 if self._agent_card is not None:
                     self._agent_card.url = self._config.server.public_url
                 log.info("Public URL resolved from Host header: %s", new_url)
-                _register_agent(self._config)
+                await asyncio.to_thread(_register_agent, self._config)
         return await call_next(request)
 
 
@@ -98,7 +101,7 @@ def create_app(config: AppConfig) -> Starlette:
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
         async with mcp_app.lifespan(mcp_app):
-            _register_agent(config)
+            await asyncio.to_thread(_register_agent, config)
             log.info("Server ready — accepting requests")
             yield
             log.info("Server shutting down")
