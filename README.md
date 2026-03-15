@@ -1,6 +1,6 @@
 # Agent Runner
 
-Container image that runs a Claude agent as a service, exposed via **MCP** (Model Context Protocol) and **A2A** (Agent-to-Agent) protocols.
+**Deploy any Claude agent as a production service in one command.** Agent Runner is a single container image that exposes Claude agents via both MCP (Model Context Protocol) and A2A (Agent-to-Agent) protocols — so agents can be called by humans, other agents, or any MCP-compatible client. Built for the [agent-runner platform](https://github.com/amp-rh/agent-runner) on Google Cloud Run.
 
 ## Prerequisites
 
